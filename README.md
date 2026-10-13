@@ -20,10 +20,10 @@ incoming call (`from`, `to`, `intent`) and decides which queue handles it:
 flowchart LR
     caller([Caller / Telephony webhook]) -->|POST /api/calls| lb[Load Balancer / Ingress]
     lb --> svc[K8s Service]
-    svc --> pod1[call_router pod]
+    svc --> podInternals
     svc --> pod2[call_router pod]
 
-    subgraph pod1 [call_router pod]
+    subgraph podInternals [call_router pod]
       bandit[Bandit HTTP server] --> router[Plug Router]
       router --> routing[Routing logic]
       router --> store[(ETS call store)]
@@ -33,7 +33,7 @@ flowchart LR
     prom[Prometheus] -->|scrape /metrics| svc
     prom --> graf[Grafana dashboards + SLOs]
     prom --> am[Alertmanager] --> oncall([On-call])
-    k8s[Kubelet] -->|/healthz liveness, /readyz readiness| pod1
+    k8s[Kubelet] -->|/healthz liveness, /readyz readiness| podInternals
 ```
 
 Planned infrastructure: Terraform provisions a GKE cluster + networking; Helm
