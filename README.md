@@ -42,7 +42,7 @@ deploys the app; CI builds, tests, scans and pushes the image, then deploys.
 ## Roadmap
 
 - [x] Elixir app (`app/`): Plug + Bandit API, health/readiness probes, JSON logs, metrics, tests
-- [ ] Docker: multi-stage image, non-root, small runtime
+- [x] Docker: multi-stage image, non-root, small runtime (`app/Dockerfile`, `docker-compose.yml`)
 - [ ] Kubernetes manifests / Helm chart (probes, resources, HPA, PDB)
 - [ ] kind local cluster (one-command local environment)
 - [ ] Terraform for GKE (VPC, cluster, node pools, Artifact Registry)
@@ -98,6 +98,32 @@ Intent mapping: `buy`/`pricing`/`sales` → `sales`; `help`/`support`/`billing`/
 
 Logs are emitted as one JSON object per line (with `request_id`, `method`,
 `path`, `status`, `duration_ms`) so they can be indexed by Loki / Cloud Logging.
+
+## Run with Docker
+
+```bash
+docker compose up --build -d   # build the image and start a container
+make smoke                     # curl /healthz, /readyz, POST /api/calls, /metrics
+docker compose down            # stop and remove it
+```
+
+Or without compose: `make docker-build && make docker-run` (`make help` lists all targets).
+
+**Image vs container.** An *image* is a read-only package: OS libraries plus
+our compiled app, built once from `app/Dockerfile`. A *container* is a running
+instance of that image (like a process started from a program). The same image
+runs on your laptop, in CI, in `kind`, and in GKE.
+
+**Multi-stage build.** The first stage (`hexpm/elixir`) has compilers and the
+Elixir toolchain and builds a `mix release`. The second stage is a slim
+Debian image that only gets the finished release, so the final image is
+about 157 MB, has no build tools and no source code, and has fewer things an
+attacker could use.
+
+**Why non-root.** The app runs as UID `10001`, not root. If someone exploits
+the app, they can't change the image's files or easily escalate on the host,
+and it works with Kubernetes `runAsNonRoot` policies. The compose file also
+makes the filesystem read-only and drops all Linux capabilities.
 
 ## License
 
