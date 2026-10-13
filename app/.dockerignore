@@ -1,0 +1,13 @@
+# Files Docker should NOT send to the build ("build context").
+# Smaller context = faster builds, and no local junk leaks into the image.
+_build/
+deps/
+cover/
+doc/
+.elixir_ls/
+erl_crash.dump
+*.ez
+.env
+.env.*
+Dockerfile
+.dockerignore
