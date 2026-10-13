@@ -1,0 +1,25 @@
+# Run the app locally with: docker compose up --build
+services:
+  call_router:
+    # Build the image from app/Dockerfile.
+    build:
+      context: ./app
+    image: voice-platform-ops/call_router:local
+    # host:container - open http://localhost:4000
+    ports:
+      - "4000:4000"
+    environment:
+      PORT: "4000"
+      LOG_LEVEL: "info"
+    # Restart automatically if the app crashes (not after manual stop).
+    restart: unless-stopped
+    # Give the BEAM time to shut down gracefully on SIGTERM.
+    stop_grace_period: 20s
+    # Defence in depth: read-only root FS, no extra Linux capabilities.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
