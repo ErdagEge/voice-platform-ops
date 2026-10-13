@@ -1,0 +1,31 @@
+# Elixir / Mix
+/app/_build/
+/app/deps/
+/app/cover/
+/app/doc/
+/app/.fetch
+erl_crash.dump
+*.ez
+*.beam
+/app/tmp/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.example.tfvars
+crash.log
+
+# Kubernetes / secrets
+kubeconfig*
+*.pem
+*.key
+.env
+.env.*
+
+# Editors / OS
+.elixir_ls/
+.vscode/
+.idea/
+.DS_Store
