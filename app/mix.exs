@@ -7,7 +7,8 @@ defmodule CallRouter.MixProject do
       version: "0.1.0",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
-      deps: deps()
+      deps: deps(),
+      releases: releases()
     ]
   end
 
@@ -16,6 +17,18 @@ defmodule CallRouter.MixProject do
     [
       extra_applications: [:logger, :crypto],
       mod: {CallRouter.Application, []}
+    ]
+  end
+
+  # `mix release` bundles our compiled code, its deps and the Erlang runtime
+  # (ERTS) into a self-contained folder - no Elixir install needed to run it.
+  defp releases do
+    [
+      call_router: [
+        include_executables_for: [:unix],
+        # Strip debug info from .beam files to shrink the release.
+        strip_beams: true
+      ]
     ]
   end
 
