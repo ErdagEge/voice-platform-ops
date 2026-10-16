@@ -1,0 +1,25 @@
+# kind = "Kubernetes IN Docker": every Kubernetes node is a Docker container.
+# Create with: make kind-up   (or: kind create cluster --config kind/cluster.yaml)
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: voice-platform
+networking:
+  # Use kube-proxy's nftables backend (GA since Kubernetes 1.33) instead of
+  # legacy iptables. Some hosts (incl. minimal VM kernels) lack the iptables
+  # extension modules kube-proxy needs, which silently breaks Services.
+  kubeProxyMode: "nftables"
+nodes:
+  # The control plane runs the Kubernetes API server, scheduler, etc.
+  - role: control-plane
+    # Expose the app to your laptop: the Service uses NodePort 30080 inside
+    # the cluster, and kind forwards host port 8080 to it.
+    # NodePort is the simplest reliable option - no ingress controller needed.
+    extraPortMappings:
+      - containerPort: 30080
+        hostPort: 8080
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+  # Two workers so replicas spread across nodes and we can practise
+  # node failures / drains later (chaos step).
+  - role: worker
+  - role: worker
