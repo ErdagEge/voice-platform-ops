@@ -1,0 +1,20 @@
+# Overrides for the local kind cluster (see kind/cluster.yaml).
+image:
+  tag: local
+  pullPolicy: Never      # image is side-loaded with `kind load`, never pulled
+
+service:
+  type: NodePort
+  nodePort: 30080        # mapped to localhost:8080 by kind
+
+config:
+  logLevel: info
+
+# Smaller footprint for a laptop.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi

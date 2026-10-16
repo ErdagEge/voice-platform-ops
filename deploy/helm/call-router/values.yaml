@@ -1,0 +1,72 @@
+# Default (production-leaning) values. Override per environment with
+# `-f values-<env>.yaml` or `--set key=value`.
+
+replicaCount: 2
+
+image:
+  repository: voice-platform-ops/call_router
+  tag: ""            # empty = use Chart.appVersion
+  pullPolicy: IfNotPresent
+
+# App configuration, delivered via a ConfigMap as environment variables.
+config:
+  port: 4000
+  logLevel: info
+  # Cap Erlang port table (see configmap.yaml) to avoid OOM at startup.
+  erlMaxPorts: 65536
+
+serviceAccount:
+  create: true
+  name: ""           # empty = generated from release name
+  automountToken: false   # the app never talks to the K8s API
+
+service:
+  type: ClusterIP    # internal only; values-local.yaml switches to NodePort
+  port: 80           # port other pods use to reach the Service
+  nodePort: null     # only used when type=NodePort
+
+# Requests = what the scheduler reserves; limits = hard cap.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+probes:
+  liveness:
+    path: /healthz
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    failureThreshold: 3
+  readiness:
+    path: /readyz
+    initialDelaySeconds: 2
+    periodSeconds: 5
+    failureThreshold: 2
+
+# Graceful shutdown: sleep in preStop so Service endpoints drop this pod
+# before the app receives SIGTERM, then allow time to finish requests.
+preStopSleepSeconds: 5
+terminationGracePeriodSeconds: 30
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+# Prometheus scrape annotations (used by the observability step).
+metrics:
+  scrape: true
+  path: /metrics
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

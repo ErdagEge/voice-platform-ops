@@ -1,0 +1,7 @@
+# Chart metadata. `version` = chart version, `appVersion` = app/image version.
+apiVersion: v2
+name: call-router
+description: Elixir voice call-routing API (Plug + Bandit)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -1,0 +1,130 @@
+# A Deployment keeps N identical pods running, replaces crashed ones, and
+# rolls out new versions gradually.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "call-router.fullname" . }}
+  labels:
+    {{- include "call-router.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  # When the HPA is on, it owns the replica count, so we must not set it.
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  # Which pods belong to this Deployment (must match the pod labels below).
+  selector:
+    matchLabels:
+      {{- include "call-router.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never drop below the desired count during a rollout: start a new pod,
+      # wait until it's Ready, only then stop an old one. Zero-downtime.
+      maxUnavailable: 0
+      maxSurge: 1
+  # The pod template: every pod is created from this blueprint.
+  template:
+    metadata:
+      labels:
+        {{- include "call-router.labels" . | nindent 8 }}
+      annotations:
+        # Changing config changes this hash, which triggers a rolling restart
+        # so pods pick up new env vars.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if .Values.metrics.scrape }}
+        # Tell Prometheus (annotation-based discovery) to scrape this pod.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.config.port | quote }}
+        prometheus.io/path: {{ .Values.metrics.path | quote }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "call-router.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountToken }}
+      # How long Kubernetes waits after SIGTERM before force-killing (SIGKILL).
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      # Pod-level security: refuse to start as root, use the image's UID 10001.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      # Prefer spreading replicas over different nodes, so one node failing
+      # doesn't take down every replica.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "call-router.selectorLabels" . | nindent 14 }}
+      containers:
+        - name: call-router
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.config.port }}
+              protocol: TCP
+          # Load PORT and LOG_LEVEL from the ConfigMap.
+          envFrom:
+            - configMapRef:
+                name: {{ include "call-router.fullname" . }}
+          # Liveness: if this fails repeatedly, kubelet RESTARTS the container.
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          # Readiness: while failing, the pod is REMOVED from the Service, so it
+          # gets no traffic (but is not restarted).
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          # Graceful shutdown. On delete, Kubernetes runs preStop, THEN sends
+          # SIGTERM. The sleep gives kube-proxy time to stop routing to this
+          # pod, so in-flight calls aren't cut off. The image is slim but has
+          # /bin/sleep (coreutils).
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "{{ .Values.preStopSleepSeconds }}"]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          # Container-level hardening.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # readOnlyRootFilesystem means nothing can be written to the image;
+          # give the BEAM a small writable scratch dir at /tmp instead.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

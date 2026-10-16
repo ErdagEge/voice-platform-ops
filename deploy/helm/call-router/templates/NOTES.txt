@@ -1,0 +1,8 @@
+call-router deployed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Check pods:   kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }} -n {{ .Release.Namespace }}
+{{- if eq .Values.service.type "NodePort" }}
+On kind:      curl http://localhost:8080/healthz
+{{- else }}
+Port-forward: kubectl port-forward svc/{{ include "call-router.fullname" . }} 8080:{{ .Values.service.port }} -n {{ .Release.Namespace }}
+{{- end }}

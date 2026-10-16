@@ -1,0 +1,21 @@
+# A Service gives the changing set of pods ONE stable name and IP, and load-
+# balances across the pods that are currently Ready.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "call-router.fullname" . }}
+  labels:
+    {{- include "call-router.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  # Send traffic to pods carrying these labels.
+  selector:
+    {{- include "call-router.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}   # port clients connect to
+      targetPort: http                     # named container port (4000)
+      protocol: TCP
+      {{- if and (eq .Values.service.type "NodePort") .Values.service.nodePort }}
+      nodePort: {{ .Values.service.nodePort }}  # fixed port on every node
+      {{- end }}

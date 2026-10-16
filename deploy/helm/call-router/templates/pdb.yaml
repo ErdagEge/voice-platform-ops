@@ -1,0 +1,16 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+# PodDisruptionBudget: during *voluntary* disruptions (node drain, cluster
+# upgrade) Kubernetes will not evict pods if fewer than minAvailable would
+# remain. It protects availability during maintenance.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "call-router.fullname" . }}
+  labels:
+    {{- include "call-router.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "call-router.selectorLabels" . | nindent 6 }}
+{{- end }}
