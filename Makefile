@@ -34,3 +34,32 @@ smoke: ## Hit the main endpoints of a running instance
 	curl -fsS -X POST localhost:$(PORT)/api/calls -H 'content-type: application/json' \
 	  -d '{"from":"+32470000001","to":"+32800000000","intent":"buy"}' && echo
 	curl -fsS localhost:$(PORT)/metrics
+
+# ---- Kubernetes (kind) ----------------------------------------------------
+CLUSTER ?= voice-platform
+RELEASE ?= call-router
+NS      ?= voice
+CHART   := deploy/helm/call-router
+
+.PHONY: kind-up kind-load deploy kind-smoke kind-down helm-lint
+
+kind-up: ## Create the local kind cluster (1 control-plane + 2 workers)
+	kind get clusters | grep -qx $(CLUSTER) || kind create cluster --config kind/cluster.yaml
+
+kind-load: docker-build ## Build the image and load it into kind nodes
+	kind load docker-image $(IMAGE) --name $(CLUSTER)
+
+deploy: ## helm upgrade --install into the kind cluster
+	helm upgrade --install $(RELEASE) $(CHART) -n $(NS) --create-namespace \
+	  -f $(CHART)/values-local.yaml --wait --timeout 3m
+
+helm-lint: ## Lint the chart and validate rendered manifests with kubeconform
+	helm lint $(CHART) -f $(CHART)/values-local.yaml
+	helm template $(RELEASE) $(CHART) -f $(CHART)/values-local.yaml --set autoscaling.enabled=true \
+	  | kubeconform -strict -summary -
+
+kind-smoke: ## Smoke-test the app through localhost:8080
+	./scripts/kind-smoke.sh
+
+kind-down: ## Delete the kind cluster
+	kind delete cluster --name $(CLUSTER)
