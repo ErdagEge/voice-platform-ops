@@ -43,8 +43,8 @@ deploys the app; CI builds, tests, scans and pushes the image, then deploys.
 
 - [x] Elixir app (`app/`): Plug + Bandit API, health/readiness probes, JSON logs, metrics, tests
 - [x] Docker: multi-stage image, non-root, small runtime (`app/Dockerfile`, `docker-compose.yml`)
-- [ ] Kubernetes manifests / Helm chart (probes, resources, HPA, PDB)
-- [ ] kind local cluster (one-command local environment)
+- [x] Kubernetes manifests / Helm chart (probes, resources, HPA, PDB) (`deploy/helm/call-router`)
+- [x] kind local cluster (one-command local environment) (`kind/cluster.yaml`)
 - [ ] Terraform for GKE (VPC, cluster, node pools, Artifact Registry)
 - [ ] CI/CD (GitLab-style pipeline: test, build, scan, deploy)
 - [ ] Observability (Prometheus, Grafana, Alertmanager)
@@ -124,6 +124,54 @@ attacker could use.
 the app, they can't change the image's files or easily escalate on the host,
 and it works with Kubernetes `runAsNonRoot` policies. The compose file also
 makes the filesystem read-only and drops all Linux capabilities.
+
+## Run on Kubernetes (kind)
+
+Requirements: Docker, [kind](https://kind.sigs.k8s.io/), `kubectl`, [Helm](https://helm.sh/) 3.
+
+```bash
+make kind-up      # create a 3-node cluster (1 control-plane + 2 workers)
+make kind-load    # build the image and copy it into the kind nodes
+make deploy       # helm upgrade --install with values-local.yaml
+make kind-smoke   # curl the app via http://localhost:8080
+kubectl -n voice get pods -o wide
+make kind-down    # delete the cluster
+```
+
+`make helm-lint` runs `helm lint` and checks the rendered manifests against the
+Kubernetes schemas with [kubeconform](https://github.com/yannh/kubeconform).
+
+**The concepts, in brief:**
+
+- **Pod**: the smallest unit Kubernetes runs: one (or a few) containers
+  sharing a network address. Pods are disposable; they can be killed and
+  replaced at any time.
+- **Deployment**: says "keep 2 copies of this pod running". If a pod or node
+  dies, it creates a replacement. When you ship a new version it does a
+  *rolling update*: with `maxUnavailable: 0` a new pod must be Ready before
+  an old one is stopped, so there is no downtime.
+- **Service**: a stable name/IP in front of the changing set of pods, which
+  load-balances only to pods that are Ready. Locally it's a `NodePort`
+  (30080) that kind maps to `localhost:8080`; in GKE it will sit behind a
+  load balancer.
+- **Probes**: the kubelet calls `/healthz` (liveness: restart the container if
+  it's stuck) and `/readyz` (readiness: stop sending traffic until it's ready).
+- **Graceful shutdown**: on deletion, a `preStop` sleep lets the Service stop
+  routing to the pod, then the app gets SIGTERM and has
+  `terminationGracePeriodSeconds` to finish in-flight requests.
+- **PodDisruptionBudget**: during node drains/upgrades, keep at least 1 pod up.
+- **HPA** (optional, `autoscaling.enabled`): add pods when CPU is high.
+- **ConfigMap / ServiceAccount**: config as env vars (`PORT`, `LOG_LEVEL`,
+  `ERL_MAX_PORTS`) and a dedicated identity for the pods.
+- **Helm**: a template engine + package manager for Kubernetes YAML. The
+  chart in `deploy/helm/call-router` is the template; `values.yaml` holds
+  defaults and `values-local.yaml` overrides them for kind. `helm upgrade
+  --install` renders and applies everything as one versioned *release* that
+  can be rolled back (`helm rollback`).
+
+> Note: calls are stored in each pod's memory, so with 2 replicas
+> `GET /api/calls/:id` may hit the other pod and return 404. Shared storage
+> comes in a later step.
 
 ## License
 
