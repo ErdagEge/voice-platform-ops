@@ -45,7 +45,7 @@ deploys the app; CI builds, tests, scans and pushes the image, then deploys.
 - [x] Docker: multi-stage image, non-root, small runtime (`app/Dockerfile`, `docker-compose.yml`)
 - [x] Kubernetes manifests / Helm chart (probes, resources, HPA, PDB) (`deploy/helm/call-router`)
 - [x] kind local cluster (one-command local environment) (`kind/cluster.yaml`)
-- [ ] Terraform for GKE (VPC, cluster, node pools, Artifact Registry)
+- [x] Terraform for GKE (VPC, cluster, node pools, Artifact Registry) (`infra/terraform`, validated offline, not applied)
 - [ ] CI/CD (GitLab-style pipeline: test, build, scan, deploy)
 - [ ] Observability (Prometheus, Grafana, Alertmanager)
 - [ ] SLOs (availability + latency, error budgets, burn-rate alerts)
@@ -172,6 +172,102 @@ Kubernetes schemas with [kubeconform](https://github.com/yannh/kubeconform).
 > Note: calls are stored in each pod's memory, so with 2 replicas
 > `GET /api/calls/:id` may hit the other pod and return 404. Shared storage
 > comes in a later step.
+
+## Infrastructure (Terraform)
+
+**What Terraform is.** You describe the cloud resources you want (network,
+cluster, registry) in `.tf` files. `terraform plan` compares that with what
+exists and shows the changes; `terraform apply` makes them. The same code
+always gives the same infrastructure, changes go through code review, and
+the infrastructure is documented by the code itself.
+
+```
+infra/terraform/
+├── .tflint.hcl
+├── modules/                 # reusable building blocks
+│   ├── network/             # VPC, subnet (+ pods/services ranges), Cloud Router + NAT, deny-all firewall
+│   ├── gke/                 # private GKE Standard cluster + autoscaling node pool + node service account
+│   └── artifact-registry/   # Docker repo with cleanup policies + pull-only IAM
+└── envs/                    # "root modules": one per environment
+    ├── dev/                 # versions.tf, main.tf, variables.tf, outputs.tf,
+    └── prod/                # backend.hcl.example, terraform.tfvars.example
+```
+
+**Modules** are like functions: inputs (`variables.tf`, with descriptions and
+validation), resources (`main.tf`), return values (`outputs.tf`). `envs/dev`
+and `envs/prod` call the same modules with different settings, so the two
+environments differ only on purpose.
+
+**What gets built (GKE design):**
+- VPC-native networking: pods and Services get real VPC IPs from secondary ranges.
+- **Private nodes**: no public IPs, outbound only through Cloud NAT. The
+  Kubernetes API is reachable only from `master_authorized_networks`.
+- **Workload Identity**: pods use Google APIs without key files.
+- **Dataplane V2**: enforces Kubernetes NetworkPolicies.
+- **Shielded nodes** + secure boot, COS image, legacy metadata endpoints disabled.
+- A **least-privilege node service account** (logs/metrics writer, pull from
+  our registry only) instead of the default Editor-level account.
+- A **release channel** with auto-upgrade/auto-repair, surge upgrades
+  (`max_unavailable = 0`), a weekend maintenance window.
+- **Cloud Logging/Monitoring** + Managed Service for Prometheus enabled.
+- A separate **autoscaling node pool** with an optional **Spot** mode.
+
+| | dev | prod |
+|---|---|---|
+| Cluster | zonal (`europe-west1-b`) | regional (`europe-west1`, 3 zones) |
+| Nodes | `e2-standard-2`, 1-3, **Spot** | `e2-standard-4`, 1-4 per zone (3-12), on-demand |
+| Release channel | REGULAR | STABLE |
+| Deletion protection | off | on |
+| Image tags | mutable | immutable |
+
+**State and backends.** Terraform records what it created in a *state* file.
+Locally that's a file on disk, which is fragile and can't be shared with
+teammates or CI. Here state is stored in a **GCS bucket** (`backend "gcs"`), which
+is versioned (recover old state) and locked (no two applies at once). The
+backend is a *partial* config: the bucket name comes from `backend.hcl`.
+
+**Offline checks** (no cloud account needed):
+
+```bash
+make tf-check   # = tf-fmt + tf-validate (init -backend=false) + tf-lint (tflint) + tf-scan (trivy/checkov)
+```
+
+Accepted scanner findings are skipped in code with the reason written next
+to them (e.g. no customer-managed encryption keys yet; Binary Authorization
+planned with CI image signing).
+
+**How it would be applied for real** (not done in this repo, and it costs money):
+
+```bash
+gcloud auth login && gcloud auth application-default login
+gcloud config set project <project-id>
+# one-time: state bucket (see envs/dev/backend.hcl.example)
+gcloud storage buckets create gs://<project-id>-tfstate --location=europe-west1 \
+  --uniform-bucket-level-access --public-access-prevention
+gcloud storage buckets update gs://<project-id>-tfstate --versioning
+
+cd infra/terraform/envs/dev
+cp backend.hcl.example backend.hcl            # set bucket
+cp terraform.tfvars.example terraform.tfvars  # set project_id, your IP
+terraform init -backend-config=backend.hcl
+terraform plan -out=tfplan                    # review!
+terraform apply tfplan
+$(terraform output -raw get_credentials_command)
+```
+
+In CI the same steps run with Workload Identity Federation instead of a
+personal login, with `plan` on merge requests and a manual `apply` approval.
+
+**Cost notes** (rough, list prices, europe-west1, check the
+[pricing calculator](https://cloud.google.com/products/calculator)):
+- GKE cluster management fee ≈ $0.10/hour (~$73/month) per cluster; the free
+  tier credit covers one zonal or Autopilot cluster per billing account.
+- dev: 1 Spot `e2-standard-2` ≈ $15-25/month + NAT (~$1/day + traffic) + disks.
+- prod: at least 3 on-demand `e2-standard-4` ≈ $300+/month, plus regional fee,
+  NAT, logging volume and load balancers.
+- Flow logs, intranode visibility and log ingestion are billed by volume;
+  sampling is lower in dev.
+- Run `terraform destroy` on dev when it isn't in use (prod has deletion protection).
 
 ## License
 
