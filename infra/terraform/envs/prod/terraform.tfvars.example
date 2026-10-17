@@ -1,0 +1,10 @@
+# Copy to terraform.tfvars (git-ignored) and fill in.
+project_id = "my-voice-prod-project"
+region     = "europe-west1"
+# cluster_location = "europe-west1"
+
+# Who may run kubectl against the cluster. Replace with your public IP /32
+# and your CI runners' egress range.
+master_authorized_networks = [
+  { cidr_block = "203.0.113.10/32", display_name = "my-laptop" },
+]

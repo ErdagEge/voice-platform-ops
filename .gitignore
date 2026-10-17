@@ -29,3 +29,6 @@ kubeconfig*
 .vscode/
 .idea/
 .DS_Store
+backend.hcl
+!backend.hcl.example
+!terraform.tfvars.example

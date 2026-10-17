@@ -1,0 +1,11 @@
+# Copy to backend.hcl (git-ignored) and run:
+#   terraform init -backend-config=backend.hcl
+#
+# The bucket must exist first, created once outside this stack, e.g.:
+#   gcloud storage buckets create gs://<project>-tfstate --location=europe-west1 \
+#     --uniform-bucket-level-access --public-access-prevention
+#   gcloud storage buckets update gs://<project>-tfstate --versioning
+# Versioning lets you recover a previous state file if one gets corrupted.
+# GCS backends lock the state automatically, so two applies can't collide.
+bucket = "my-gcp-project-tfstate"
+prefix = "voice-platform/dev"
