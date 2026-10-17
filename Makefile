@@ -63,3 +63,28 @@ kind-smoke: ## Smoke-test the app through localhost:8080
 
 kind-down: ## Delete the kind cluster
 	kind delete cluster --name $(CLUSTER)
+
+# ---- Terraform (offline checks only - nothing here talks to GCP) ----------
+TF_DIR  := infra/terraform
+TF_ENVS := dev prod
+
+.PHONY: tf-fmt tf-validate tf-lint tf-scan tf-check
+
+tf-fmt: ## Check Terraform formatting (run `terraform fmt -recursive` to fix)
+	terraform fmt -check -recursive $(TF_DIR)
+
+tf-validate: ## terraform init (no backend) + validate for each env
+	@for e in $(TF_ENVS); do \
+	  echo "== $$e"; \
+	  terraform -chdir=$(TF_DIR)/envs/$$e init -backend=false -input=false >/dev/null && \
+	  terraform -chdir=$(TF_DIR)/envs/$$e validate || exit 1; \
+	done
+
+tf-lint: ## tflint (with the Google ruleset) across all modules/envs
+	cd $(TF_DIR) && tflint --init && tflint --recursive --config "$$PWD/.tflint.hcl"
+
+tf-scan: ## IaC security scan with trivy (and checkov if installed)
+	trivy config --exit-code 1 $(TF_DIR)
+	@if command -v checkov >/dev/null; then checkov -d $(TF_DIR) --framework terraform --compact --quiet; fi
+
+tf-check: tf-fmt tf-validate tf-lint tf-scan ## All Terraform checks
