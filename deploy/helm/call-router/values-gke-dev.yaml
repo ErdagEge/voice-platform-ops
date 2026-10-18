@@ -1,0 +1,7 @@
+# Overrides for the GKE dev cluster (infra/terraform/envs/dev).
+# image.repository / image.tag are set by CI (scripts/deploy.sh).
+replicaCount: 2
+service:
+  type: ClusterIP
+config:
+  logLevel: debug

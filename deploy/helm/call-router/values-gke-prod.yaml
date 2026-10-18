@@ -1,0 +1,21 @@
+# Overrides for the GKE prod cluster (infra/terraform/envs/prod).
+# image.repository / image.tag are set by CI (scripts/deploy.sh).
+service:
+  type: ClusterIP
+config:
+  logLevel: info
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
