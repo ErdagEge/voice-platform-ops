@@ -1,5 +1,7 @@
 # voice-platform-ops
 
+[![CI](https://github.com/ErdagEge/voice-platform-ops/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ErdagEge/voice-platform-ops/actions/workflows/ci.yml)
+
 Production-style Elixir voice call-routing service on Kubernetes: Terraform, CI/CD, observability, SLOs, DR.
 
 ## Goal
@@ -46,7 +48,7 @@ deploys the app; CI builds, tests, scans and pushes the image, then deploys.
 - [x] Kubernetes manifests / Helm chart (probes, resources, HPA, PDB) (`deploy/helm/call-router`)
 - [x] kind local cluster (one-command local environment) (`kind/cluster.yaml`)
 - [x] Terraform for GKE (VPC, cluster, node pools, Artifact Registry) (`infra/terraform`, validated offline, not applied)
-- [ ] CI/CD (GitLab-style pipeline: test, build, scan, deploy)
+- [x] CI/CD (GitLab-style pipeline: test, build, scan, deploy) (`.gitlab-ci.yml`, `.github/workflows/ci.yml`, `scripts/`)
 - [ ] Observability (Prometheus, Grafana, Alertmanager)
 - [ ] SLOs (availability + latency, error budgets, burn-rate alerts)
 - [ ] Backup / DR (state backup, restore drills, RTO/RPO)
@@ -268,6 +270,83 @@ personal login, with `plan` on merge requests and a manual `apply` approval.
 - Flow logs, intranode visibility and log ingestion are billed by volume;
   sampling is lower in dev.
 - Run `terraform destroy` on dev when it isn't in use (prod has deletion protection).
+
+## CI/CD
+
+Two pipelines with the same stages, both calling the same scripts in
+`scripts/`, so they behave the same:
+
+- **`.gitlab-ci.yml`**: the main one (the target platform uses GitLab):
+  builds to the GitLab registry, deploys to GKE `dev` automatically and to
+  `production` after a manual approval.
+- **`.github/workflows/ci.yml`**: runs on every push/PR to this GitHub repo.
+  Instead of GKE it deploys to a **throwaway kind cluster on the runner**, runs
+  the smoke test, and proves that a broken release is rolled back.
+
+```mermaid
+flowchart LR
+    subgraph lint
+      L1[mix format + credo]
+      L2[terraform fmt/validate + tflint]
+      L3[helm lint + kubeconform]
+      L4[shellcheck / hadolint / actionlint]
+    end
+    T[test: mix test]
+    B[build: docker buildx<br/>tag = commit SHA]
+    subgraph scan
+      S1[trivy image<br/>fail on HIGH/CRITICAL]
+      S2[trivy IaC]
+      S3[SBOM CycloneDX]
+      S4[cosign keyless sign]
+    end
+    D1[deploy-dev<br/>helm --atomic + smoke]
+    G{{manual approval}}
+    D2[deploy-prod<br/>helm --atomic + smoke]
+    lint --> B
+    T --> B --> scan --> D1 --> G --> D2
+    D1 -. smoke fails .-> R[helm rollback]
+    D2 -. smoke fails .-> R
+```
+
+| Script | What it does |
+|---|---|
+| `scripts/deploy.sh` | `helm upgrade --install --atomic --wait --timeout`, then the smoke test; `helm rollback` if the smoke test fails |
+| `scripts/ci-smoke.sh` | checks `/healthz`, `/readyz`, `POST /api/calls`, 422 on bad input, `/metrics` |
+| `scripts/rollback-demo.sh` | deploys a release with a broken readiness probe and checks that `--atomic` rolls it back |
+| `scripts/gcp-auth.sh` | GitLab OIDC token → Google credentials via Workload Identity Federation |
+
+Run them against kind locally: `make ci-deploy-kind` and `make rollback-demo`.
+
+**Concepts, briefly:**
+- **Stages and jobs.** Each job runs in a clean container. Stages run in order
+  (lint → test → build → scan → deploy), and a failure stops the pipeline
+  before anything bad reaches a cluster. `needs:` lets independent jobs start early.
+- **Artifacts and caches.** *Artifacts* are files passed between jobs (the
+  image tarball, the SBOM, the image digest). *Caches* (Mix deps, Docker layers,
+  the Trivy DB) only make jobs faster; nothing depends on them.
+- **Immutable images.** Every image is tagged with the commit SHA and deployed
+  by digest, so you always know which commit is running. Rolling back means
+  deploying an older SHA.
+- **Supply chain.** Trivy fails the build on fixable HIGH/CRITICAL CVEs, an
+  SBOM lists every package in the image, and cosign signs the image digest
+  using the CI system's identity, with no signing key to store. Later, GKE
+  Binary Authorization can refuse unsigned images.
+- **Atomic deploys and rollback.** `--atomic --wait` means "wait until all new
+  pods are Ready; if that doesn't happen in time, automatically roll back".
+  Because the chart uses `maxUnavailable: 0`, the old pods keep serving the
+  whole time. A release that is "Ready" but wrong is caught by the smoke test,
+  which runs `helm rollback`.
+- **Environments and approval.** GitLab *environments* (`dev`, `production`)
+  record what is deployed where and allow one-click re-deploys. Prod is
+  `when: manual` and should be a *protected environment* with required
+  approvers. `resource_group` prevents two deploys to the same environment at once.
+- **OIDC instead of keys.** A JSON service-account key in CI variables is
+  a long-lived password: if it leaks, it works until someone notices. With
+  Workload Identity Federation, GitLab issues a short-lived signed token
+  per job (`id_tokens:`). Google checks it (project, branch) and returns a
+  credential that expires in about an hour. The CI settings hold only resource
+  names, no secrets. On GitHub, `GITHUB_TOKEN` (push to GHCR) and the OIDC
+  token for cosign work the same way.
 
 ## License
 

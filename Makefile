@@ -88,3 +88,20 @@ tf-scan: ## IaC security scan with trivy (and checkov if installed)
 	@if command -v checkov >/dev/null; then checkov -d $(TF_DIR) --framework terraform --compact --quiet; fi
 
 tf-check: tf-fmt tf-validate tf-lint tf-scan ## All Terraform checks
+
+# ---- CI/CD helpers (same scripts the pipelines run) ------------------------
+.PHONY: ci-deploy-kind rollback-demo ci-lint
+
+ci-deploy-kind: ## Deploy to kind via scripts/deploy.sh (atomic + smoke + rollback)
+	IMAGE_REPO=voice-platform-ops/call_router IMAGE_TAG=local \
+	VALUES_FILES=$(CHART)/values-local.yaml SMOKE_URL=http://localhost:8080 \
+	./scripts/deploy.sh
+
+rollback-demo: ## Deploy a broken release to kind and show --atomic rolling it back
+	IMAGE_REPO=voice-platform-ops/call_router IMAGE_TAG=local \
+	VALUES_FILES=$(CHART)/values-local.yaml HELM_TIMEOUT=60s \
+	./scripts/rollback-demo.sh
+
+ci-lint: ## Lint the CI definitions (actionlint + shellcheck)
+	actionlint
+	shellcheck scripts/*.sh
