@@ -71,8 +71,12 @@ FROM ${RUNNER_IMAGE} AS runtime
 #  - ca-certificates: trust store for outbound HTTPS
 #  - curl: used by HEALTHCHECK below
 #  - locales: proper UTF-8 support
+# `apt-get upgrade` first pulls in Debian security fixes released after the
+# base image was built, so the CI vulnerability scan (HIGH/CRITICAL) stays
+# green between base-image updates.
 # hadolint ignore=DL3008
 RUN apt-get update \
+ && apt-get upgrade -y --no-install-recommends \
  && apt-get install -y --no-install-recommends \
       libstdc++6 openssl libncurses6 locales ca-certificates curl \
  && rm -rf /var/lib/apt/lists/* \
