@@ -39,7 +39,9 @@ defmodule CallRouter.MixProject do
       # Plug is the request/response abstraction + router DSL.
       {:plug, "~> 1.16"},
       # Jason encodes/decodes JSON.
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      # Static code analysis / style linter (dev & test only, not in the release).
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
     ]
   end
 end
