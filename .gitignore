@@ -32,3 +32,7 @@ kubeconfig*
 backend.hcl
 !backend.hcl.example
 !terraform.tfvars.example
+
+# gitlab-ci-local working dir
+.gitlab-ci-local/
+.gcp/

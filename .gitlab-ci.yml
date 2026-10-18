@@ -1,0 +1,307 @@
+# =============================================================================
+# GitLab CI/CD pipeline for voice-platform-ops
+#
+#   lint -> test -> build -> scan -> deploy-dev -> deploy-prod (manual)
+#
+# Jobs in the same stage run in parallel; a stage starts only when the previous
+# one succeeded (unless `needs:` lets a job start earlier). Each job runs in a
+# fresh container from its `image:`.
+#
+# CI/CD variables to configure (Settings > CI/CD > Variables), scoped per
+# environment ("dev" / "production") so the same job definition targets
+# different projects/clusters. None of them is a secret:
+#   GCP_PROJECT_ID, GCP_PROJECT_NUMBER, GCP_WIF_POOL, GCP_WIF_PROVIDER,
+#   GCP_SERVICE_ACCOUNT, GKE_CLUSTER, GKE_LOCATION, AR_REPOSITORY
+#   (AR_REPOSITORY = terraform output image_repository, without /call_router)
+# If they are not set, the deploy jobs are simply skipped (see rules).
+# =============================================================================
+
+stages:
+  - lint
+  - test
+  - build
+  - scan
+  - deploy-dev
+  - deploy-prod
+
+# When does a pipeline run at all? For merge requests, for the default branch
+# and for tags - not twice for a branch that also has an open MR.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH
+
+variables:
+  # Pinned tool images: same versions locally, on GitHub and here.
+  ELIXIR_IMAGE: "hexpm/elixir:1.18.4-erlang-27.3.4.16-debian-trixie-20260824-slim"
+  TERRAFORM_IMAGE: "hashicorp/terraform:1.16.6"
+  TFLINT_IMAGE: "ghcr.io/terraform-linters/tflint:v0.64.0"
+  HELM_IMAGE: "alpine/helm:3.22.1"
+  TRIVY_IMAGE: "aquasec/trivy:0.76.0"
+  DOCKER_IMAGE: "docker:29.9.1"
+  GCLOUD_IMAGE: "google/cloud-sdk:589.0.0"
+  KUBECONFORM_VERSION: "v0.8.0"
+  HELM_VERSION: "v3.22.1"
+  CRANE_VERSION: "v0.22.1"
+  COSIGN_VERSION: "v3.1.3"
+
+  # The image is always tagged with the commit SHA: every deploy is traceable
+  # to exactly one commit, and redeploying an old SHA is a rollback.
+  IMAGE_NAME: "$CI_REGISTRY_IMAGE/call_router"
+  IMAGE_TAG: "$CI_COMMIT_SHA"
+
+  # Keep Mix/Hex caches inside the project dir so GitLab can cache them.
+  MIX_HOME: "$CI_PROJECT_DIR/.mix"
+  HEX_HOME: "$CI_PROJECT_DIR/.hex"
+
+# Reusable snippets ("hidden jobs" start with a dot). `extends:` merges them.
+.elixir:
+  image: $ELIXIR_IMAGE
+  variables:
+    MIX_ENV: test
+  # Cache deps and compiled code, keyed on mix.lock: a new lock = new cache.
+  cache:
+    key:
+      files: [app/mix.lock]
+      prefix: mix-$CI_JOB_NAME_SLUG
+    paths: [app/deps, app/_build, .mix, .hex]
+  before_script:
+    - cd app
+    - mix local.hex --force && mix local.rebar --force
+    - mix deps.get
+
+# Deploy jobs only on the default branch, and only if GCP is configured.
+.deploy_rules: &deploy_rules
+  - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $GCP_WIF_PROVIDER
+
+# ----------------------------------------------------------------------------
+# lint
+# ----------------------------------------------------------------------------
+elixir:lint:
+  extends: .elixir
+  stage: lint
+  script:
+    - mix format --check-formatted
+    - mix credo --strict
+
+terraform:validate:
+  stage: lint
+  image:
+    name: $TERRAFORM_IMAGE
+    entrypoint: [""] # the image's entrypoint is `terraform`; we want a shell
+  script:
+    - terraform fmt -check -recursive infra/terraform
+    - |
+      set -e
+      for env in dev prod; do
+        terraform -chdir=infra/terraform/envs/$env init -backend=false -input=false
+        terraform -chdir=infra/terraform/envs/$env validate
+      done
+
+terraform:tflint:
+  stage: lint
+  image:
+    name: $TFLINT_IMAGE
+    entrypoint: [""]
+  script:
+    - cd infra/terraform
+    - tflint --init
+    - tflint --recursive --config "$PWD/.tflint.hcl"
+
+helm:lint:
+  stage: lint
+  image:
+    name: $HELM_IMAGE
+    entrypoint: [""]
+  script:
+    - wget -qO- "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" | tar xz -C /usr/local/bin kubeconform
+    - helm lint deploy/helm/call-router -f deploy/helm/call-router/values-local.yaml
+    # Render every values file and validate against the Kubernetes schemas.
+    - |
+      set -eo pipefail  # fail if `helm template` fails, not just kubeconform
+      for v in values-local.yaml values-gke-dev.yaml values-gke-prod.yaml; do
+        echo "== $v"
+        helm template call-router deploy/helm/call-router -f deploy/helm/call-router/$v \
+          | kubeconform -strict -summary -
+      done
+
+scripts:shellcheck:
+  stage: lint
+  image: koalaman/shellcheck-alpine:v0.11.0
+  script:
+    - shellcheck scripts/*.sh
+
+# ----------------------------------------------------------------------------
+# test
+# ----------------------------------------------------------------------------
+elixir:test:
+  extends: .elixir
+  stage: test
+  needs: [] # start immediately, don't wait for lint
+  script:
+    - mix test
+
+# ----------------------------------------------------------------------------
+# build: docker buildx, pushed to the GitLab Container Registry
+# ----------------------------------------------------------------------------
+docker:build:
+  stage: build
+  needs: [elixir:test, elixir:lint]
+  image: $DOCKER_IMAGE
+  # A Docker daemon running as a side container ("Docker-in-Docker").
+  services:
+    - name: ${DOCKER_IMAGE}-dind
+      alias: docker
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  before_script:
+    # CI_REGISTRY_* are injected by GitLab: a per-job token, no stored secret.
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - docker buildx create --use --driver docker-container
+  script:
+    # Layer cache lives in the registry (:buildcache), so builds on fresh
+    # runners still reuse the slow deps-compile layers.
+    - >
+      docker buildx build app
+      --tag "$IMAGE_NAME:$IMAGE_TAG"
+      --tag "$IMAGE_NAME:$CI_COMMIT_REF_SLUG"
+      --cache-from "type=registry,ref=$IMAGE_NAME:buildcache"
+      --cache-to "type=registry,ref=$IMAGE_NAME:buildcache,mode=max"
+      --label "org.opencontainers.image.revision=$CI_COMMIT_SHA"
+      --label "org.opencontainers.image.source=$CI_PROJECT_URL"
+      --metadata-file build-metadata.json
+      --push
+    # Hand the immutable digest (sha256:...) to later jobs via a dotenv artifact.
+    - |
+      digest=$(grep -o '"containerimage.digest": *"sha256:[a-f0-9]*"' build-metadata.json | grep -o 'sha256:[a-f0-9]*')
+      echo "IMAGE_DIGEST=$digest" > build.env
+    - cat build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+    paths: [build-metadata.json]
+    expire_in: 1 week
+
+# ----------------------------------------------------------------------------
+# scan: image CVEs, SBOM, IaC misconfigurations, signing
+# ----------------------------------------------------------------------------
+.trivy:
+  image:
+    name: $TRIVY_IMAGE
+    entrypoint: [""]
+  variables:
+    # Fall back to a mirror if ghcr.io rate-limits the vulnerability DB.
+    TRIVY_DB_REPOSITORY: "mirror.gcr.io/aquasec/trivy-db:2,ghcr.io/aquasecurity/trivy-db:2"
+    TRIVY_NO_PROGRESS: "true"
+    TRIVY_CACHE_DIR: ".trivycache/"
+  cache:
+    key: trivy
+    paths: [.trivycache/]
+
+trivy:image:
+  extends: .trivy
+  stage: scan
+  needs: [docker:build]
+  variables:
+    TRIVY_USERNAME: "$CI_REGISTRY_USER"
+    TRIVY_PASSWORD: "$CI_REGISTRY_PASSWORD"
+  script:
+    # Fail the pipeline on HIGH/CRITICAL vulnerabilities that have a fix.
+    - trivy image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed "$IMAGE_NAME:$IMAGE_TAG"
+    # SBOM = list of every package in the image (CycloneDX), kept as artifact.
+    - trivy image --format cyclonedx --output sbom.cdx.json "$IMAGE_NAME:$IMAGE_TAG"
+  artifacts:
+    paths: [sbom.cdx.json]
+    expire_in: 30 days
+
+trivy:iac:
+  extends: .trivy
+  stage: scan
+  needs: []
+  script:
+    # Terraform, Helm chart, Dockerfile. Accepted findings are annotated in code.
+    - trivy config --exit-code 1 --severity HIGH,CRITICAL --skip-dirs app/deps,app/_build .
+
+# Keyless signing with Sigstore cosign: GitLab's OIDC token proves *which
+# pipeline* built the image; no signing key to store or leak. A GKE Binary
+# Authorization policy can later require this signature before deploy.
+cosign:sign:
+  stage: scan
+  needs: [docker:build, trivy:image]
+  image: alpine:3.22
+  id_tokens:
+    SIGSTORE_ID_TOKEN:
+      aud: sigstore
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - apk add --no-cache curl
+    - curl -fsSLo /usr/local/bin/cosign "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64"
+    - chmod +x /usr/local/bin/cosign
+    - cosign login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD"
+    # Sign the digest, never a tag (tags can move).
+    - cosign sign --yes "$IMAGE_NAME@$IMAGE_DIGEST"
+
+# ----------------------------------------------------------------------------
+# deploy: GKE via Workload Identity Federation + Helm
+# ----------------------------------------------------------------------------
+.deploy:
+  image: $GCLOUD_IMAGE # includes gcloud, kubectl and gke-gcloud-auth-plugin
+  # A short-lived OIDC token for Google STS (see scripts/gcp-auth.sh).
+  id_tokens:
+    GCP_ID_TOKEN:
+      aud: https://iam.googleapis.com/projects/${GCP_PROJECT_NUMBER}/locations/global/workloadIdentityPools/${GCP_WIF_POOL}/providers/${GCP_WIF_PROVIDER}
+  before_script:
+    - curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" | tar xz -C /usr/local/bin --strip-components=1 linux-amd64/helm
+    - curl -fsSL "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" | tar xz -C /usr/local/bin crane
+    - scripts/gcp-auth.sh
+    # Copy the scanned image (by digest) from the GitLab registry into this
+    # environment's Artifact Registry, where GKE nodes are allowed to pull.
+    - gcloud auth configure-docker "${AR_REPOSITORY%%/*}" --quiet
+    - crane auth login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD"
+    - crane copy "$IMAGE_NAME@$IMAGE_DIGEST" "$AR_REPOSITORY/call_router:$IMAGE_TAG"
+  script:
+    # helm upgrade --install --atomic --wait, then smoke test; helm rollback
+    # if the smoke test fails. Same script as GitHub Actions and local runs.
+    - IMAGE_REPO="$AR_REPOSITORY/call_router" scripts/deploy.sh
+  after_script:
+    - rm -rf .gcp # never leave the token/credential file in the workspace
+
+deploy:dev:
+  extends: .deploy
+  stage: deploy-dev
+  needs: [docker:build, trivy:image, trivy:iac, helm:lint]
+  variables:
+    NAMESPACE: voice
+    VALUES_FILES: deploy/helm/call-router/values-gke-dev.yaml
+  # A GitLab "environment" tracks what is deployed where, keeps a deployment
+  # history and offers one-click re-deploys of older pipelines (rollback).
+  environment:
+    name: dev
+    deployment_tier: development
+  resource_group: dev # never two deploys to the same env at once
+  rules: *deploy_rules
+
+deploy:prod:
+  extends: .deploy
+  stage: deploy-prod
+  needs: [deploy:dev, docker:build]
+  variables:
+    NAMESPACE: voice
+    VALUES_FILES: deploy/helm/call-router/values-gke-prod.yaml
+    HELM_TIMEOUT: 10m
+  environment:
+    name: production
+    deployment_tier: production
+  resource_group: production
+  # Manual gate: a human clicks "Run". Additionally mark "production" as a
+  # Protected Environment (Settings > CI/CD) with required approvals so only
+  # approved maintainers can deploy.
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $GCP_WIF_PROVIDER
+      when: manual
+  allow_failure: false # pipeline shows "blocked" until approved
