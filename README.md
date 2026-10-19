@@ -49,8 +49,8 @@ deploys the app; CI builds, tests, scans and pushes the image, then deploys.
 - [x] kind local cluster (one-command local environment) (`kind/cluster.yaml`)
 - [x] Terraform for GKE (VPC, cluster, node pools, Artifact Registry) (`infra/terraform`, validated offline, not applied)
 - [x] CI/CD (GitLab-style pipeline: test, build, scan, deploy) (`.gitlab-ci.yml`, `.github/workflows/ci.yml`, `scripts/`)
-- [ ] Observability (Prometheus, Grafana, Alertmanager)
-- [ ] SLOs (availability + latency, error budgets, burn-rate alerts)
+- [x] Observability (Prometheus, Grafana, Alertmanager, Tempo traces, Loki logs) (`deploy/observability`, `app/lib/call_router/telemetry.ex`)
+- [x] SLOs (availability + latency, error budgets, burn-rate alerts) (`slo/`, `docs/runbooks/`)
 - [ ] Backup / DR (state backup, restore drills, RTO/RPO)
 - [ ] Chaos tests & runbooks (pod kills, node drain, incident playbooks)
 
@@ -87,7 +87,7 @@ curl localhost:4000/metrics
 | GET    | `/readyz`        | Readiness: able to serve traffic |
 | POST   | `/api/calls`     | Route a call; body `{from, to, intent}` → 201 with decision, 422 if invalid |
 | GET    | `/api/calls/:id` | Fetch a stored call (404 if unknown) |
-| GET    | `/metrics`       | Prometheus text-format counters |
+| GET    | `/metrics`       | Prometheus metrics: request counter + latency histogram, calls by queue, errors by kind, BEAM VM |
 
 Intent mapping: `buy`/`pricing`/`sales` → `sales`; `help`/`support`/`billing`/`complaint` → `support`; anything else → `voicebot`.
 
@@ -97,9 +97,13 @@ Intent mapping: `buy`/`pricing`/`sales` → `sales`; `help`/`support`/`billing`/
 |-------------|---------|-------------|
 | `PORT`      | `4000`  | HTTP listen port |
 | `LOG_LEVEL` | `info` (prod) | Logger level (`debug`, `info`, `warning`, `error`) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP/HTTP collector, e.g. `http://alloy.monitoring:4318`. Unset = tracing is a no-op |
+| `OTEL_SERVICE_NAME` | `call-router` | `service.name` on every span |
+| `FAULT_ERROR_RATE` | `0` | Demo only: share (0–1) of `POST /api/calls` answered with 503 |
+| `FAULT_LATENCY_MS` | `0` | Demo only: extra delay added to `POST /api/calls` |
 
-Logs are emitted as one JSON object per line (with `request_id`, `method`,
-`path`, `status`, `duration_ms`) so they can be indexed by Loki / Cloud Logging.
+Logs are emitted as one JSON object per line (with `request_id`, `trace_id`,
+`span_id`, `method`, `route`, `status`, `duration_ms`) so they can be indexed by Loki / Cloud Logging.
 
 ## Run with Docker
 
@@ -347,6 +351,130 @@ Run them against kind locally: `make ci-deploy-kind` and `make rollback-demo`.
   credential that expires in about an hour. The CI settings hold only resource
   names, no secrets. On GitHub, `GITHUB_TOKEN` (push to GHCR) and the OIDC
   token for cosign work the same way.
+
+## Observability & SLOs
+
+Everything here runs locally on kind with free, open-source components. No
+paid service or cloud account is involved.
+
+```mermaid
+flowchart LR
+    app[call_router pods] -->|/metrics scraped every 15s| prom[Prometheus]
+    app -->|OTLP traces| alloy[Grafana Alloy]
+    app -->|JSON logs on stdout| alloy
+    alloy --> tempo[(Tempo<br/>traces)]
+    alloy --> loki[(Loki<br/>logs)]
+    prom -->|SLO recording + burn-rate rules| am[Alertmanager]
+    am -->|severity=page / ticket| oncall([pager / tickets])
+    prom --> graf[Grafana]
+    tempo --> graf
+    loki --> graf
+```
+
+```bash
+make kind-up kind-load   # cluster + image (see above)
+make obs-up              # kube-prometheus-stack, Tempo, Loki, Alloy + SLO rules (~5 min the first time)
+make deploy              # app; the ServiceMonitor is only created once its CRD exists,
+                         # so run (or re-run) this after obs-up
+make load DURATION=300   # generate traffic
+make grafana             # http://localhost:3000 (admin/admin, anonymous view enabled)
+make prometheus          # http://localhost:9090
+make alertmanager        # http://localhost:9093
+make slo-check slo-test  # promtool: validate rules + run SLO unit tests
+make obs-down            # remove the stack
+```
+
+| Path | What it is |
+|---|---|
+| `app/lib/call_router/telemetry.ex` | `:telemetry` events → Prometheus metrics (counters, latency histogram, VM stats) |
+| `app/lib/call_router/tracing.ex` | OpenTelemetry spans; copies `trace_id` into every log line |
+| `deploy/observability/*.values.yaml` | One Helm values file per component (kube-prometheus-stack, Tempo, Loki, Alloy) |
+| `deploy/helm/call-router/templates/servicemonitor.yaml` | Tells Prometheus to scrape the app (`serviceMonitor.enabled`) |
+| `deploy/helm/call-router/dashboards/call-router.json` | Grafana dashboard, loaded by the Grafana sidecar (`grafanaDashboard.enabled`) |
+| `slo/call-router-slo.rules.yml` | SLIs, error budget and multi-window burn-rate alerts (plain Prometheus rules) |
+| `slo/tests/*.test.yml` | `promtool test rules` unit tests: fake traffic in, expected alerts out |
+| `docs/runbooks/` | One runbook per alert; every alert links to its page via `runbook_url` |
+
+### The SLOs
+
+| SLO | SLI (what we measure) | Target | Error budget (30 days) |
+|---|---|---|---|
+| Availability | share of `/api/*` requests that do **not** return 5xx | 99.5 % | 0.5 % of requests (≈ 3.6 h of full outage) |
+| Latency | share of `/api/*` requests served in **< 500 ms** | 99 % | 1 % of requests may be slower |
+
+| Alert | Burn rate | Windows (long AND short) | `for` | Severity | Budget used when it fires |
+|---|---|---|---|---|---|
+| `…BudgetBurnFast` | 14.4× | 1h and 5m | 2m | page | 2 % in 1 hour |
+| `…BudgetBurnMedium` | 6× | 6h and 30m | 15m | page | 5 % in 6 hours |
+| `…BudgetBurnSlow` | 1× | 3d and 6h | 1h | ticket | 10 % in 3 days |
+
+Plus two symptom alerts, `CallRouterDown` (no healthy target for 2m) and
+`CallRouterPodRestarting` (more than 3 restarts in 15m). Alertmanager routes
+`severity=page` to a `pager` receiver and `severity=ticket` to `tickets`. These
+are empty placeholders here; in production they would be PagerDuty/Opsgenie and
+a ticket queue. A firing page suppresses the ticket alert for the same SLO.
+
+### Verified on kind
+
+With `--set config.faultErrorRate=0.3`, 30 % of `POST /api/calls` return 503.
+The 5-minute error ratio rose to about 15 % of all API traffic, about 30× the
+budget rate. `CallRouterAvailabilityBudgetBurnFast` went *pending* and then
+*firing* after 2 minutes, reached Alertmanager as `severity=page` on the
+`pager` receiver, and linked to its runbook. The slower alerts were *pending*
+as expected.
+
+![Grafana dashboard](docs/images/grafana-dashboard.png)
+
+The dashboard has SLO budget remaining and burn rate, RED metrics (rate,
+errors, p50/p95/p99 latency), calls by queue, errors by kind, pod restarts,
+firing alerts, live logs and recent traces. The budget shows a large negative
+number because the 30-day window holds only a few minutes of data, all at a
+30 % error rate.
+
+![Trace in Tempo](docs/images/tempo-trace.png)
+
+This is one `POST /api/calls` request as a trace: the HTTP server span plus
+the child spans `routing.decide` and `call_store.put`. Clicking the `trace_id`
+in a Loki log line opens this view.
+
+![Alert firing in Alertmanager](docs/images/alertmanager-firing.png)
+
+![Alert rules in Prometheus](docs/images/prometheus-alerts.png)
+
+**Resources.** The whole kind cluster, including Kubernetes itself, the app, the
+monitoring stack and the load generator, used about 4.4 GB RAM. Prometheus
+(400 Mi request, 2-day retention) is the largest piece. Persistence is off for
+Tempo and Grafana, so a restart clears traces. That is fine for a demo. CI only
+runs `promtool` and installs the ServiceMonitor CRD; it does not install the
+full stack.
+
+**Concepts, briefly:**
+- **Metrics, logs and traces.** *Metrics* are numbers over time (requests/s,
+  p99 latency). They are cheap to keep and good for dashboards and alerts:
+  "*something* is wrong". *Logs* are one line per event with details: "*what*
+  happened to this request". *Traces* follow one request through every step
+  with timings: "*where* the time went". Here they are linked. A log line
+  carries the `trace_id`, so you can jump from an error log to its trace.
+- **Histograms and percentiles.** The app counts each request into latency
+  buckets (≤5 ms, ≤10 ms, … ≤500 ms, …). Prometheus can then compute p50, p95
+  and p99 for any time range and across pods, which a pre-computed average
+  cannot do.
+- **SLI, SLO, error budget.** An *SLI* is a measurement of what users feel
+  (the share of successful, fast requests). The *SLO* is the target for it
+  (99.5 % over 30 days). The *error budget* is the rest (0.5 %). That amount
+  of failure is allowed. While budget is left you can ship risky changes; when
+  it is used up, reliability work comes first.
+- **Burn rate.** The burn rate is how fast you spend the budget. 1× uses it up
+  in exactly 30 days, and 14.4× uses it up in about 2 days. Alerting on burn
+  rate means paging for "we will miss the SLO soon" and not for every blip.
+- **Multi-window alerts.** Each alert needs a long window (e.g. 1h, so it is
+  significant) *and* a short one (e.g. 5m, so it is still happening) to be
+  over the threshold. This filters out short spikes and lets the alert clear
+  quickly once the problem is fixed. Fast burns page a human; slow burns open
+  a ticket.
+- **Rules as code.** The SLO rules are a plain file checked by
+  `promtool check rules` and unit-tested with `promtool test rules` in both
+  pipelines, the same way the Elixir code is tested.
 
 ## License
 
