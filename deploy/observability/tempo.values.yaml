@@ -1,0 +1,21 @@
+# Grafana Tempo (single binary) - stores traces. Receives OTLP from Alloy.
+#   helm upgrade --install tempo grafana-community/tempo -n monitoring -f deploy/observability/tempo.values.yaml
+fullnameOverride: tempo
+tempo:
+  reportingEnabled: false
+  retention: 24h
+  # OTLP is the vendor-neutral OpenTelemetry protocol (gRPC 4317 / HTTP 4318).
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+  resources:
+    requests: { cpu: 20m, memory: 64Mi }
+    limits: { memory: 512Mi }
+persistence:
+  enabled: false # traces live in an emptyDir - fine for a demo cluster
+serviceMonitor:
+  enabled: true

@@ -56,7 +56,8 @@ deploy: ## helm upgrade --install into the kind cluster
 helm-lint: ## Lint the chart and validate rendered manifests with kubeconform
 	helm lint $(CHART) -f $(CHART)/values-local.yaml
 	helm template $(RELEASE) $(CHART) -f $(CHART)/values-local.yaml --set autoscaling.enabled=true \
-	  | kubeconform -strict -summary -
+	  --api-versions monitoring.coreos.com/v1/ServiceMonitor \
+	  | kubeconform -strict -summary -schema-location default -schema-location '$(CRD_SCHEMAS)' -
 
 kind-smoke: ## Smoke-test the app through localhost:8080
 	./scripts/kind-smoke.sh
@@ -105,3 +106,56 @@ rollback-demo: ## Deploy a broken release to kind and show --atomic rolling it b
 ci-lint: ## Lint the CI definitions (actionlint + shellcheck)
 	actionlint
 	shellcheck scripts/*.sh
+
+# ---- Observability (local kind, all OSS) -----------------------------------
+OBS_NS  := monitoring
+OBS_DIR := deploy/observability
+KPS_VERSION   := 92.10.1
+TEMPO_VERSION := 3.2.0
+LOKI_VERSION  := 18.17.1
+ALLOY_VERSION := 1.13.1
+CRD_SCHEMAS := https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
+
+.PHONY: obs-repos obs-up obs-down grafana prometheus alertmanager slo-check slo-test slo-apply load
+
+obs-repos:
+	helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update
+	helm repo add grafana https://grafana.github.io/helm-charts --force-update
+	helm repo add grafana-community https://grafana-community.github.io/helm-charts --force-update
+	helm repo update
+
+obs-up: obs-repos ## Install Prometheus/Alertmanager/Grafana, Tempo, Loki, Alloy into kind + SLO rules
+	helm upgrade --install kps prometheus-community/kube-prometheus-stack --version $(KPS_VERSION) \
+	  -n $(OBS_NS) --create-namespace -f $(OBS_DIR)/kube-prometheus-stack.values.yaml --wait --timeout 10m
+	helm upgrade --install tempo grafana-community/tempo --version $(TEMPO_VERSION) \
+	  -n $(OBS_NS) -f $(OBS_DIR)/tempo.values.yaml --wait --timeout 5m
+	helm upgrade --install loki grafana-community/loki --version $(LOKI_VERSION) \
+	  -n $(OBS_NS) -f $(OBS_DIR)/loki.values.yaml --wait --timeout 5m
+	helm upgrade --install alloy grafana/alloy --version $(ALLOY_VERSION) \
+	  -n $(OBS_NS) -f $(OBS_DIR)/alloy.values.yaml --wait --timeout 5m
+	$(MAKE) slo-apply
+
+obs-down: ## Remove the observability stack
+	-helm uninstall alloy loki tempo kps -n $(OBS_NS)
+	-kubectl delete prometheusrule call-router-slo -n $(NS)
+
+grafana: ## Grafana on http://localhost:3000 (admin/admin)
+	kubectl -n $(OBS_NS) port-forward svc/kps-grafana 3000:80
+
+prometheus: ## Prometheus on http://localhost:9090
+	kubectl -n $(OBS_NS) port-forward svc/kps-prometheus 9090:9090
+
+alertmanager: ## Alertmanager on http://localhost:9093
+	kubectl -n $(OBS_NS) port-forward svc/kps-alertmanager 9093:9093
+
+slo-check: ## promtool: validate SLO recording/alerting rules
+	promtool check rules slo/call-router-slo.rules.yml
+
+slo-test: ## promtool: run SLO rule unit tests
+	promtool test rules slo/tests/*.test.yml
+
+slo-apply: ## Apply SLO rules to the cluster as a PrometheusRule
+	./scripts/slo-prometheusrule.sh | kubectl apply -f -
+
+load: ## Generate traffic against kind (DURATION=120 seconds)
+	./scripts/load.sh

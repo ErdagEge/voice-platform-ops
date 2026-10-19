@@ -13,3 +13,12 @@ data:
   # container runtimes set that limit to ~1 billion, which makes the VM
   # allocate huge tables at boot and get OOMKilled. Cap it explicitly.
   ERL_MAX_PORTS: {{ .Values.config.erlMaxPorts | quote }}
+  DEPLOY_ENV: {{ .Values.config.environment | quote }}
+  APP_VERSION: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
+  FAULT_ERROR_RATE: {{ .Values.config.faultErrorRate | quote }}
+  FAULT_LATENCY_MS: {{ .Values.config.faultLatencyMs | quote }}
+  {{- with .Values.tracing.otlpEndpoint }}
+  # Where to send traces (OTLP over HTTP). Unset = tracing export off.
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ . | quote }}
+  OTEL_SERVICE_NAME: call-router
+  {{- end }}

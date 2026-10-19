@@ -14,6 +14,15 @@ config:
   logLevel: info
   # Cap Erlang port table (see configmap.yaml) to avoid OOM at startup.
   erlMaxPorts: 65536
+  # Name of the environment, attached to traces (deployment.environment).
+  environment: local
+  # Fault injection for demos/chaos tests. Keep 0 outside experiments!
+  faultErrorRate: "0"
+  faultLatencyMs: 0
+
+# OpenTelemetry tracing. Empty endpoint = tracing export disabled (no-op).
+tracing:
+  otlpEndpoint: ""   # e.g. http://alloy.monitoring:4318
 
 serviceAccount:
   create: true
@@ -61,10 +70,22 @@ autoscaling:
   maxReplicas: 6
   targetCPUUtilizationPercentage: 70
 
-# Prometheus scrape annotations (used by the observability step).
+# Prometheus scrape annotations (for annotation-based discovery).
 metrics:
   scrape: true
   path: /metrics
+
+# ServiceMonitor for the Prometheus Operator (kube-prometheus-stack).
+# Needs the monitoring.coreos.com CRDs, so it's off by default.
+serviceMonitor:
+  enabled: false
+  interval: 15s
+  scrapeTimeout: 10s
+  labels: {}
+
+# Ship the Grafana dashboard as a ConfigMap (loaded by Grafana's sidecar).
+grafanaDashboard:
+  enabled: false
 
 podAnnotations: {}
 nodeSelector: {}

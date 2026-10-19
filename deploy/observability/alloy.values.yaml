@@ -1,0 +1,93 @@
+# Grafana Alloy = our telemetry collector (an OpenTelemetry Collector
+# distribution). One small Deployment that:
+#   1. receives OTLP traces from call-router and forwards them to Tempo
+#   2. tails pod logs of the `voice` namespace via the Kubernetes API and
+#      ships them to Loki
+#   helm upgrade --install alloy grafana/alloy -n monitoring -f deploy/observability/alloy.values.yaml
+fullnameOverride: alloy
+controller:
+  type: deployment
+  replicas: 1
+alloy:
+  resources:
+    requests: { cpu: 20m, memory: 64Mi }
+    limits: { memory: 256Mi }
+  extraPorts:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+  configMap:
+    content: |
+      // ---- Traces: OTLP in -> batch -> Tempo ---------------------------------
+      otelcol.receiver.otlp "default" {
+        grpc { endpoint = "0.0.0.0:4317" }
+        http { endpoint = "0.0.0.0:4318" }
+        output { traces = [otelcol.processor.batch.default.input] }
+      }
+
+      otelcol.processor.batch "default" {
+        output { traces = [otelcol.exporter.otlp.tempo.input] }
+      }
+
+      otelcol.exporter.otlp "tempo" {
+        client {
+          endpoint = "tempo.monitoring:4317"
+          tls { insecure = true }
+        }
+      }
+
+      // ---- Logs: pods in namespace "voice" -> Loki ------------------------------
+      discovery.kubernetes "pods" {
+        role = "pod"
+        namespaces { names = ["voice"] }
+      }
+
+      discovery.relabel "pods" {
+        targets = discovery.kubernetes.pods.targets
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "namespace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label  = "pod"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          target_label  = "container"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+          target_label  = "app"
+        }
+      }
+
+      // Reads logs through the Kubernetes API - no hostPath mounts needed.
+      loki.source.kubernetes "pods" {
+        targets    = discovery.relabel.pods.output
+        forward_to = [loki.process.json.receiver]
+      }
+
+      // Our logs are JSON: promote `level` to a label (low cardinality!) and
+      // keep trace_id as structured metadata (searchable, not a label).
+      loki.process "json" {
+        stage.json {
+          expressions = { level = "level", trace_id = "trace_id" }
+        }
+        stage.labels {
+          values = { level = "" }
+        }
+        stage.structured_metadata {
+          values = { trace_id = "" }
+        }
+        forward_to = [loki.write.default.receiver]
+      }
+
+      loki.write "default" {
+        endpoint { url = "http://loki.monitoring:3100/loki/api/v1/push" }
+      }

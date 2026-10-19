@@ -10,6 +10,14 @@ service:
 config:
   logLevel: info
 
+# Observability stack from deploy/observability (make obs-up).
+tracing:
+  otlpEndpoint: http://alloy.monitoring:4318
+serviceMonitor:
+  enabled: true
+grafanaDashboard:
+  enabled: true
+
 # Smaller footprint for a laptop.
 resources:
   requests:

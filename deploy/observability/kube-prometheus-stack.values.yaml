@@ -1,0 +1,149 @@
+# kube-prometheus-stack for the LOCAL kind cluster (free, OSS).
+# Installs: Prometheus Operator, Prometheus, Alertmanager, Grafana,
+# kube-state-metrics (pod/deployment state) and node-exporter (node metrics).
+# Sized small for a laptop; not production settings.
+#
+#   helm upgrade --install kps prometheus-community/kube-prometheus-stack \
+#     -n monitoring -f deploy/observability/kube-prometheus-stack.values.yaml
+fullnameOverride: kps
+
+# kind's control-plane components don't expose metrics to other pods; scraping
+# them would only create "target down" noise.
+kubeEtcd: { enabled: false }
+kubeControllerManager: { enabled: false }
+kubeScheduler: { enabled: false }
+kubeProxy: { enabled: false }
+
+defaultRules:
+  create: true
+  rules:
+    etcd: false
+    kubeControllerManager: false
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+    kubeProxy: false
+  # kind nodes are containers without their own NTP sync -> false positive.
+  disabled:
+    NodeClockNotSynchronising: true
+
+prometheus:
+  prometheusSpec:
+    # Pick up ServiceMonitors / PrometheusRules from ANY namespace and release
+    # (by default only those labelled with this Helm release are used).
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    scrapeInterval: 15s
+    evaluationInterval: 15s
+    retention: 2d
+    retentionSize: 2GB
+    # Receive exemplars (trace ids attached to metrics) - lets Grafana jump
+    # from a latency spike straight to a trace.
+    enableFeatures: [exemplar-storage]
+    resources:
+      requests: { cpu: 100m, memory: 400Mi }
+      limits: { memory: 1Gi }
+
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests: { cpu: 10m, memory: 32Mi }
+      limits: { memory: 128Mi }
+  config:
+    route:
+      group_by: [alertname, slo, severity]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      receiver: "null"
+      routes:
+        # Watchdog always fires: proves the alert pipeline works end to end.
+        - matchers: ['alertname = "Watchdog"']
+          receiver: "null"
+        # Real setups route severity=page to PagerDuty/Opsgenie and
+        # severity=ticket to Jira/Slack. Locally we only view the Alertmanager UI.
+        - matchers: ['severity = "page"']
+          receiver: pager
+        - matchers: ['severity = "ticket"']
+          receiver: tickets
+    receivers:
+      - name: "null"
+      - name: pager
+      - name: tickets
+    inhibit_rules:
+      # A page silences the matching ticket for the same SLO.
+      - source_matchers: ['severity = "page"']
+        target_matchers: ['severity = "ticket"']
+        equal: [slo]
+
+grafana:
+  adminPassword: admin # local only - never do this outside a laptop cluster
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 384Mi }
+  # The sidecar loads any ConfigMap labelled grafana_dashboard=1 as a dashboard
+  # (our call-router chart ships one).
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+  grafana.ini:
+    auth.anonymous:
+      enabled: true
+      org_role: Viewer
+    # Local demo only: let anonymous viewers open Explore (to inspect traces
+    # and logs) without logging in. Never do this on a shared Grafana.
+    users:
+      viewers_can_edit: true
+    feature_toggles:
+      enable: traceToMetrics
+  additionalDataSources:
+    - name: Tempo
+      uid: tempo
+      type: tempo
+      access: proxy
+      url: http://tempo.monitoring:3200
+      jsonData:
+        # From a span, jump to the logs of the same trace in Loki.
+        tracesToLogsV2:
+          datasourceUid: loki
+          spanStartTimeShift: "-5m"
+          spanEndTimeShift: "5m"
+          filterByTraceID: true
+          customQuery: true
+          query: '{namespace="voice"} |= "$${__trace.traceId}"'
+        serviceMap:
+          datasourceUid: prometheus
+        nodeGraph:
+          enabled: true
+    - name: Loki
+      uid: loki
+      type: loki
+      access: proxy
+      url: http://loki.monitoring:3100
+      jsonData:
+        # Turn the trace_id field of our JSON logs into a clickable Tempo link.
+        derivedFields:
+          - name: trace_id
+            matcherRegex: '"trace_id":"([0-9a-f]{32})"'
+            datasourceUid: tempo
+            url: "$${__value.raw}"
+            urlDisplayLabel: View trace
+
+prometheusOperator:
+  resources:
+    requests: { cpu: 20m, memory: 64Mi }
+    limits: { memory: 256Mi }
+
+kube-state-metrics:
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits: { memory: 128Mi }
+
+prometheus-node-exporter:
+  resources:
+    requests: { cpu: 10m, memory: 16Mi }
+    limits: { memory: 64Mi }

@@ -1,0 +1,31 @@
+# Grafana Loki (monolithic, filesystem storage) - stores logs.
+#   helm upgrade --install loki grafana-community/loki -n monitoring -f deploy/observability/loki.values.yaml
+fullnameOverride: loki
+deploymentMode: Monolithic
+loki:
+  auth_enabled: false # single tenant
+  commonConfig:
+    replication_factor: 1
+  storage:
+    type: filesystem
+  useTestSchema: true # a ready-made schema config; fine for local use
+  limits_config:
+    retention_period: 24h
+    allow_structured_metadata: true
+singleBinary:
+  replicas: 1
+  persistence:
+    enabled: false
+  resources:
+    requests: { cpu: 20m, memory: 96Mi }
+    limits: { memory: 512Mi }
+# Everything below is for bigger installs - switched off to save memory.
+read: { replicas: 0 }
+write: { replicas: 0 }
+backend: { replicas: 0 }
+gateway: { enabled: false }
+chunksCache: { enabled: false }
+resultsCache: { enabled: false }
+lokiCanary: { enabled: false }
+test: { enabled: false }
+minio: { enabled: false }

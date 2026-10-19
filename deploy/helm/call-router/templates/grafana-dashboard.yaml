@@ -1,0 +1,14 @@
+{{- if .Values.grafanaDashboard.enabled }}
+# Grafana's sidecar watches for ConfigMaps with this label and loads the JSON
+# inside as a dashboard - dashboards are versioned with the app, as code.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "call-router.fullname" . }}-dashboard
+  labels:
+    {{- include "call-router.labels" . | nindent 4 }}
+    grafana_dashboard: "1"
+data:
+  call-router.json: |-
+{{ .Files.Get "dashboards/call-router.json" | indent 4 }}
+{{- end }}
