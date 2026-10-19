@@ -3,7 +3,7 @@ defmodule CallRouter.Application do
   OTP application entry point.
 
   It starts a *supervision tree*: if a child process crashes, its supervisor
-  restarts it. Order matters - the stores must exist before the web server
+  restarts it. Order matters - metrics and the store must exist before the web server
   accepts requests that use them.
   """
   use Application
@@ -13,9 +13,13 @@ defmodule CallRouter.Application do
   def start(_type, _args) do
     port = Application.get_env(:call_router, :port, 4000)
 
+    # Attach the OpenTelemetry handler to Bandit's telemetry events *before*
+    # the server starts, so every request gets a server span.
+    OpentelemetryBandit.setup()
+
     children =
       [
-        CallRouter.Metrics,
+        CallRouter.Telemetry,
         CallRouter.CallStore
       ] ++ server_children(port)
 

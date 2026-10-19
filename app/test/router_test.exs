@@ -67,14 +67,72 @@ defmodule CallRouter.RouterTest do
     end
   end
 
-  test "GET /metrics exposes Prometheus counters" do
-    post_json("/api/calls", %{from: "a", to: "b", intent: "buy"})
-    conn = conn(:get, "/metrics") |> call()
-    assert conn.status == 200
-    assert [ctype | _] = get_resp_header(conn, "content-type")
-    assert ctype =~ "text/plain"
-    assert conn.resp_body =~ ~s(call_router_calls_routed_total{queue="sales"})
-    assert conn.resp_body =~ "http_requests_total"
+  describe "GET /metrics" do
+    test "exposes request counters labelled by route template" do
+      %{"call_id" => id} = post_json("/api/calls", %{from: "a", to: "b", intent: "buy"}) |> body()
+      conn(:get, "/api/calls/#{id}") |> call()
+
+      conn = conn(:get, "/metrics") |> call()
+      assert conn.status == 200
+      assert [ctype | _] = get_resp_header(conn, "content-type")
+      assert ctype =~ "text/plain"
+
+      assert conn.resp_body =~ ~s(call_router_calls_routed_total{queue="sales"})
+
+      assert conn.resp_body =~
+               ~s(http_requests_total{method="POST",route="/api/calls",status="201"})
+
+      # The template, not the real id - keeps metric cardinality bounded.
+      assert conn.resp_body =~ ~s(route="/api/calls/:id")
+      refute conn.resp_body =~ id
+    end
+
+    test "exposes a latency histogram with SLO-friendly buckets" do
+      conn(:get, "/healthz") |> call()
+      metrics = (conn(:get, "/metrics") |> call()).resp_body
+
+      assert metrics =~ "# TYPE http_request_duration_seconds histogram"
+
+      for le <- ["0.3", "0.5", "+Inf"] do
+        assert metrics =~
+                 ~s(http_request_duration_seconds_bucket{method="GET",route="/healthz",le="#{le}"})
+      end
+
+      assert metrics =~ "http_request_duration_seconds_count"
+      assert metrics =~ "http_request_duration_seconds_sum"
+    end
+
+    test "counts validation errors" do
+      post_json("/api/calls", %{})
+      metrics = (conn(:get, "/metrics") |> call()).resp_body
+      assert metrics =~ ~s(call_router_errors_total{kind="validation"})
+    end
+
+    test "unknown routes share one label" do
+      conn(:get, "/does/not/exist/123") |> call()
+      metrics = (conn(:get, "/metrics") |> call()).resp_body
+      assert metrics =~ ~s(route="unmatched")
+      refute metrics =~ "/does/not/exist"
+    end
+  end
+
+  describe "fault injection" do
+    setup do
+      on_exit(fn -> Application.put_env(:call_router, :fault_error_rate, 0.0) end)
+    end
+
+    test "returns 503 and counts an injected error when enabled" do
+      Application.put_env(:call_router, :fault_error_rate, 1.0)
+      conn = post_json("/api/calls", %{from: "a", to: "b", intent: "buy"})
+      assert conn.status == 503
+
+      metrics = (conn(:get, "/metrics") |> call()).resp_body
+      assert metrics =~ ~s(call_router_errors_total{kind="injected"})
+    end
+
+    test "is off by default" do
+      assert post_json("/api/calls", %{from: "a", to: "b"}).status == 201
+    end
   end
 
   test "unknown route returns 404" do

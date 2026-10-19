@@ -5,12 +5,13 @@ defmodule CallRouter.Router do
   """
   use Plug.Router
   require Logger
+  require OpenTelemetry.Tracer, as: Tracer
 
-  alias CallRouter.{CallStore, Metrics, Routing}
+  alias CallRouter.{CallStore, FaultInjection, Routing, Tracing}
 
   # Adds an x-request-id header and puts it in Logger metadata.
   plug(Plug.RequestId)
-  # Our own logging/metrics hook (see below).
+  # Our own logging/metrics/tracing hook (see below).
   plug(:observe)
   plug(:match)
   # Parse JSON bodies into conn.body_params.
@@ -34,15 +35,17 @@ defmodule CallRouter.Router do
   end
 
   post "/api/calls" do
-    case Routing.route(conn.body_params) do
-      {:ok, call} ->
-        CallStore.put(call)
-        Metrics.inc("call_router_calls_routed_total", %{queue: call.queue})
-        Logger.info("call routed", call_id: call.call_id)
-        json(conn, 201, call)
+    FaultInjection.maybe_delay()
 
-      {:error, reason} ->
-        json(conn, 422, %{error: reason})
+    if FaultInjection.fail?() do
+      error(:injected)
+      Tracing.set_error("fault injection")
+
+      conn
+      |> assign(:fault_injected, true)
+      |> json(503, %{error: "temporarily unavailable (fault injection)"})
+    else
+      route_call(conn)
     end
   end
 
@@ -57,7 +60,7 @@ defmodule CallRouter.Router do
   get "/metrics" do
     conn
     |> put_resp_content_type("text/plain; version=0.0.4")
-    |> send_resp(200, Metrics.render())
+    |> send_resp(200, CallRouter.Telemetry.scrape())
   end
 
   match _ do
@@ -66,33 +69,76 @@ defmodule CallRouter.Router do
 
   # --- helpers -------------------------------------------------------------
 
+  defp route_call(conn) do
+    # Child spans make the steps of a request visible in the trace waterfall.
+    decision = Tracer.with_span("routing.decide", do: Routing.route(conn.body_params))
+
+    case decision do
+      {:ok, call} ->
+        Tracer.with_span("call_store.put", do: CallStore.put(call))
+        :telemetry.execute([:call_router, :call, :routed], %{count: 1}, %{queue: call.queue})
+        Tracing.set_attributes(%{"call.id": call.call_id, "call.queue": call.queue})
+        Logger.info("call routed", call_id: call.call_id)
+        json(conn, 201, call)
+
+      {:error, reason} ->
+        error(:validation)
+        json(conn, 422, %{error: reason})
+    end
+  end
+
+  defp error(kind), do: :telemetry.execute([:call_router, :error], %{count: 1}, %{kind: kind})
+
   defp json(conn, status, body) do
     conn
     |> put_resp_content_type("application/json")
     |> send_resp(status, Jason.encode!(body))
   end
 
-  # Registers a callback that runs right before the response is sent,
-  # so we can log and count every request with its final status code.
+  # Runs before routing. Registers a callback that fires right before the
+  # response is sent, so we know the final status code and duration.
   defp observe(conn, _opts) do
     start = System.monotonic_time()
+    Tracing.put_log_metadata()
 
     register_before_send(conn, fn conn ->
-      ms = System.convert_time_unit(System.monotonic_time() - start, :native, :millisecond)
+      duration = System.monotonic_time() - start
+      route = route_template(conn)
 
-      Metrics.inc("http_requests_total", %{
+      # Injected faults were already counted with their own kind.
+      if conn.status >= 500 and !conn.assigns[:fault_injected] do
+        error(:server)
+        Tracing.set_error("HTTP #{conn.status}")
+      end
+
+      Tracing.name_server_span(conn.method, route)
+
+      :telemetry.execute([:call_router, :http, :request], %{duration: duration}, %{
         method: conn.method,
+        route: route,
         status: conn.status
       })
 
       Logger.info("request",
         method: conn.method,
+        route: route,
         path: conn.request_path,
         status: conn.status,
-        duration_ms: ms
+        duration_ms: System.convert_time_unit(duration, :native, :millisecond)
       )
 
       conn
     end)
+  end
+
+  # Plug.Router stores the matched route template ("/api/calls/:id") in
+  # conn.private. The catch-all `match _` (template "/*_path") and requests
+  # that never reached the router share one "unmatched" label.
+  defp route_template(conn) do
+    case conn.private do
+      %{plug_route: {"/*_path", _fun}} -> "unmatched"
+      %{plug_route: {route, _fun}} -> route
+      _ -> "unmatched"
+    end
   end
 end

@@ -26,6 +26,9 @@ defmodule CallRouter.MixProject do
     [
       call_router: [
         include_executables_for: [:unix],
+        # OpenTelemetry docs: start the exporter before the SDK, and make the
+        # SDK :temporary so a tracing failure can never take the app down.
+        applications: [opentelemetry_exporter: :permanent, opentelemetry: :temporary],
         # Strip debug info from .beam files to shrink the release.
         strip_beams: true
       ]
@@ -40,6 +43,22 @@ defmodule CallRouter.MixProject do
       {:plug, "~> 1.16"},
       # Jason encodes/decodes JSON.
       {:jason, "~> 1.4"},
+      # --- Metrics ---------------------------------------------------------
+      # :telemetry is the standard Erlang/Elixir event bus: code emits events,
+      # reporters subscribe. telemetry_metrics describes metrics (counter,
+      # histogram...) and the Prometheus "core" reporter aggregates them and
+      # renders the /metrics text format.
+      {:telemetry, "~> 1.3"},
+      {:telemetry_metrics, "~> 1.0"},
+      {:telemetry_metrics_prometheus_core, "~> 1.2"},
+      # Periodically emits BEAM VM measurements (memory, run queues).
+      {:telemetry_poller, "~> 1.1"},
+      # --- Tracing (OpenTelemetry) -----------------------------------------
+      {:opentelemetry_api, "~> 1.4"},
+      {:opentelemetry, "~> 1.5"},
+      {:opentelemetry_exporter, "~> 1.8"},
+      # Creates a server span for every HTTP request handled by Bandit.
+      {:opentelemetry_bandit, "~> 0.3"},
       # Static code analysis / style linter (dev & test only, not in the release).
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
     ]
