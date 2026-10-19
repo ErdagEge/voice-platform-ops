@@ -1,0 +1,130 @@
+# promtool unit tests for the availability SLO.
+# Run: promtool test rules slo/tests/*.test.yml
+# Series notation: 'a+bxN' = start at a, add b each interval, N times.
+rule_files:
+  - ../call-router-slo.rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  # 1. Healthy: 0.1% errors (budget is 0.5%) -> no alerts; budget mostly intact.
+  - interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="call-router",route="/api/calls",method="POST",status="201"}'
+        values: '0+999x120'
+      - series: 'http_requests_total{job="call-router",route="/api/calls",method="POST",status="503"}'
+        values: '0+1x120'
+      # Health checks fail a lot, but are NOT user traffic -> must be ignored.
+      - series: 'http_requests_total{job="call-router",route="/healthz",method="GET",status="500"}'
+        values: '0+500x120'
+    promql_expr_test:
+      - expr: slo:sli_error:ratio_rate5m{slo="call-router-availability"}
+        eval_time: 60m
+        exp_samples:
+          - labels: 'slo:sli_error:ratio_rate5m{slo="call-router-availability"}'
+            value: 0.001
+      - expr: slo:error_budget_remaining:ratio{slo="call-router-availability"}
+        eval_time: 60m
+        exp_samples:
+          - labels: 'slo:error_budget_remaining:ratio{slo="call-router-availability"}'
+            value: 0.8 # 0.1% of the 0.5% budget used -> 80% left
+    alert_rule_test:
+      - alertname: CallRouterAvailabilityBudgetBurnFast
+        eval_time: 60m
+        exp_alerts: []
+      - alertname: CallRouterAvailabilityBudgetBurnSlow
+        eval_time: 60m
+        exp_alerts: []
+
+  # 2. Outage: 10% errors -> fast burn (> 14.4 * 0.5% = 7.2%) pages.
+  - interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="call-router",route="/api/calls",method="POST",status="201"}'
+        values: '0+900x120'
+      - series: 'http_requests_total{job="call-router",route="/api/calls",method="POST",status="503"}'
+        values: '0+100x120'
+    alert_rule_test:
+      # Condition true from the start, but `for: 2m` delays firing.
+      - alertname: CallRouterAvailabilityBudgetBurnFast
+        eval_time: 1m
+        exp_alerts: []
+      - alertname: CallRouterAvailabilityBudgetBurnFast
+        eval_time: 30m
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              slo: call-router-availability
+              team: voice-platform
+            exp_annotations:
+              summary: "call-router availability error budget burning 14.4x too fast"
+              description: "The availability SLI error ratio is 10% over the last 1h (threshold 7.2%, i.e. 14.4x the 0.5% budget of the 99.5% availability SLO). At this pace 2% of the 30-day error budget is spent in 1 hour."
+              runbook_url: "https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterAvailabilityBudgetBurnFast.md"
+
+  # 3. Recovery: errors stop -> the short (5m) window clears the alert quickly
+  #    even though the 1h window still looks bad. That's the point of two windows.
+  - interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="call-router",route="/api/calls",method="POST",status="201"}'
+        values: '0+900x30 27000+1000x30'
+      - series: 'http_requests_total{job="call-router",route="/api/calls",method="POST",status="503"}'
+        values: '0+100x30 3000+0x30'
+    promql_expr_test:
+      # 1h window still above the 7.2% threshold (~7.7%) ...
+      - expr: round(slo:sli_error:ratio_rate1h{slo="call-router-availability"}, 0.001) > 0.072
+        eval_time: 40m
+        exp_samples:
+          - labels: '{slo="call-router-availability"}'
+            value: 0.077
+      # ... but the 5m window is clean, so the alert is resolved.
+      - expr: slo:sli_error:ratio_rate5m{slo="call-router-availability"}
+        eval_time: 40m
+        exp_samples:
+          - labels: 'slo:sli_error:ratio_rate5m{slo="call-router-availability"}'
+            value: 0
+    alert_rule_test:
+      - alertname: CallRouterAvailabilityBudgetBurnFast
+        eval_time: 40m
+        exp_alerts: []
+
+  # 4. Slow leak: 0.6% errors for 3 days -> ticket only, no page.
+  - interval: 10m
+    input_series:
+      - series: 'http_requests_total{job="call-router",route="/api/calls",method="POST",status="201"}'
+        values: '0+9940x450'
+      - series: 'http_requests_total{job="call-router",route="/api/calls",method="POST",status="503"}'
+        values: '0+60x450'
+    alert_rule_test:
+      - alertname: CallRouterAvailabilityBudgetBurnSlow
+        eval_time: 3d
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              slo: call-router-availability
+              team: voice-platform
+            exp_annotations:
+              summary: "call-router availability error budget burning 1x too fast"
+              description: "The availability SLI error ratio is 0.6% over the last 3d (threshold 0.5%, i.e. 1x the 0.5% budget of the 99.5% availability SLO). At this pace 10% of the 30-day error budget is spent in 3 days."
+              runbook_url: "https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterAvailabilityBudgetBurnSlow.md"
+      - alertname: CallRouterAvailabilityBudgetBurnFast
+        eval_time: 3d
+        exp_alerts: []
+      - alertname: CallRouterAvailabilityBudgetBurnMedium
+        eval_time: 3d
+        exp_alerts: []
+
+  # 5. No 5xx has ever happened (no 5xx series exists) -> SLI is 0, not empty.
+  - interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="call-router",route="/api/calls",method="POST",status="201"}'
+        values: '0+1000x60'
+    promql_expr_test:
+      - expr: slo:sli_error:ratio_rate5m{slo="call-router-availability"}
+        eval_time: 30m
+        exp_samples:
+          - labels: 'slo:sli_error:ratio_rate5m{slo="call-router-availability"}'
+            value: 0
+      - expr: slo:error_budget_remaining:ratio{slo="call-router-availability"}
+        eval_time: 30m
+        exp_samples:
+          - labels: 'slo:error_budget_remaining:ratio{slo="call-router-availability"}'
+            value: 1

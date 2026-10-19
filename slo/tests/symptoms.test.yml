@@ -1,0 +1,46 @@
+# promtool unit tests for non-SLO symptom alerts.
+rule_files:
+  - ../call-router-slo.rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  # All targets disappear (e.g. scaled to 0) -> CallRouterDown after 2m.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="call-router",pod="call-router-a"}'
+        values: '1 1 1 1 1 _ _ _ _ _ _ _'
+    alert_rule_test:
+      - alertname: CallRouterDown
+        eval_time: 4m
+        exp_alerts: []
+      - alertname: CallRouterDown
+        eval_time: 11m
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              team: voice-platform
+            exp_annotations:
+              summary: "No call-router instance is being scraped successfully"
+              description: "Prometheus has had no healthy call-router target for 2 minutes. Either all pods are down/scaled to 0, or scraping is broken. Incoming calls are likely failing."
+              runbook_url: "https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterDown.md"
+
+  # Crash loop: 5 restarts in 15 minutes -> ticket.
+  - interval: 1m
+    input_series:
+      - series: 'kube_pod_container_status_restarts_total{namespace="voice",pod="call-router-x",container="call-router"}'
+        values: '0 0 1 1 2 2 3 3 4 4 5 5 5 5 5 5'
+    alert_rule_test:
+      - alertname: CallRouterPodRestarting
+        eval_time: 15m
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              team: voice-platform
+              namespace: voice
+              pod: call-router-x
+              container: call-router
+            exp_annotations:
+              summary: "call-router pod call-router-x is restarting frequently"
+              description: "Container restarted 5 times in 15 minutes (crash loop, OOMKill or failing liveness probe)."
+              runbook_url: "https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterPodRestarting.md"

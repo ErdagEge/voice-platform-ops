@@ -1,0 +1,321 @@
+# =============================================================================
+# SLOs for call-router - plain Prometheus rules (source of truth).
+#
+#   Availability SLO : 99.5% of API requests succeed (non-5xx), 30-day window
+#   Latency SLO      : 99%  of API requests complete in < 500 ms, 30-day window
+#
+# SLI  (indicator) = measured ratio of bad events, e.g. 5xx / all requests.
+# SLO  (objective) = target for the SLI over a window (99.5% over 30 days).
+# Error budget     = what the SLO allows to fail: 0.5% of requests.
+# Burn rate        = how fast we spend it. 1x = budget gone in exactly 30 d;
+#                    14.4x = gone in ~2 days (14.4 * 1h = 2% of budget/hour).
+#
+# Alerts use the Google SRE Workbook "multi-window, multi-burn-rate" pattern:
+# the long window proves it's significant, the short window proves it's
+# still happening (so alerts resolve quickly once fixed).
+#
+#   severity=page   : 14.4x over 1h AND 5m   (2% of budget in 1 hour)
+#   severity=page   :    6x over 6h AND 30m  (5% of budget in 6 hours)
+#   severity=ticket :    1x over 3d AND 6h   (10% of budget in 3 days)
+#
+# Only /api/* routes count: health checks and scrapes are not user traffic.
+# `or vector(0)`: with zero 5xx so far there is no 5xx series at all, and
+# "nothing / total" would be empty instead of 0.
+# Validate:  promtool check rules slo/call-router-slo.rules.yml
+# Test:      promtool test rules slo/tests/*.test.yml
+# Deploy:    make slo-apply  (wraps this file in a PrometheusRule)
+# =============================================================================
+groups:
+  # ---------------------------------------------------------------------------
+  - name: call-router-slo-availability.recording
+    interval: 30s
+    rules:
+      - record: slo:sli_error:ratio_rate5m
+        expr: |
+          (sum(rate(http_requests_total{job="call-router",route=~"/api/.*",status=~"5.."}[5m])) or vector(0))
+          /
+          sum(rate(http_requests_total{job="call-router",route=~"/api/.*"}[5m]))
+        labels:
+          slo: call-router-availability
+      - record: slo:sli_error:ratio_rate30m
+        expr: |
+          (sum(rate(http_requests_total{job="call-router",route=~"/api/.*",status=~"5.."}[30m])) or vector(0))
+          /
+          sum(rate(http_requests_total{job="call-router",route=~"/api/.*"}[30m]))
+        labels:
+          slo: call-router-availability
+      - record: slo:sli_error:ratio_rate1h
+        expr: |
+          (sum(rate(http_requests_total{job="call-router",route=~"/api/.*",status=~"5.."}[1h])) or vector(0))
+          /
+          sum(rate(http_requests_total{job="call-router",route=~"/api/.*"}[1h]))
+        labels:
+          slo: call-router-availability
+      - record: slo:sli_error:ratio_rate2h
+        expr: |
+          (sum(rate(http_requests_total{job="call-router",route=~"/api/.*",status=~"5.."}[2h])) or vector(0))
+          /
+          sum(rate(http_requests_total{job="call-router",route=~"/api/.*"}[2h]))
+        labels:
+          slo: call-router-availability
+      - record: slo:sli_error:ratio_rate6h
+        expr: |
+          (sum(rate(http_requests_total{job="call-router",route=~"/api/.*",status=~"5.."}[6h])) or vector(0))
+          /
+          sum(rate(http_requests_total{job="call-router",route=~"/api/.*"}[6h]))
+        labels:
+          slo: call-router-availability
+      - record: slo:sli_error:ratio_rate1d
+        expr: |
+          (sum(rate(http_requests_total{job="call-router",route=~"/api/.*",status=~"5.."}[1d])) or vector(0))
+          /
+          sum(rate(http_requests_total{job="call-router",route=~"/api/.*"}[1d]))
+        labels:
+          slo: call-router-availability
+      - record: slo:sli_error:ratio_rate3d
+        expr: |
+          (sum(rate(http_requests_total{job="call-router",route=~"/api/.*",status=~"5.."}[3d])) or vector(0))
+          /
+          sum(rate(http_requests_total{job="call-router",route=~"/api/.*"}[3d]))
+        labels:
+          slo: call-router-availability
+      - record: slo:sli_error:ratio_rate30d
+        expr: |
+          (sum(rate(http_requests_total{job="call-router",route=~"/api/.*",status=~"5.."}[30d])) or vector(0))
+          /
+          sum(rate(http_requests_total{job="call-router",route=~"/api/.*"}[30d]))
+        labels:
+          slo: call-router-availability
+      # Fraction of the 30-day error budget still left (1 = untouched, <0 = blown).
+      - record: slo:error_budget_remaining:ratio
+        expr: 1 - (slo:sli_error:ratio_rate30d{slo="call-router-availability"} / 0.005)
+        labels:
+          slo: call-router-availability
+
+  # ---------------------------------------------------------------------------
+  - name: call-router-slo-latency.recording
+    interval: 30s
+    rules:
+      # "Bad" = slower than 500 ms = not in the le="0.5" bucket.
+      - record: slo:sli_error:ratio_rate5m
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{job="call-router",route=~"/api/.*",le="0.5"}[5m]))
+            /
+            sum(rate(http_request_duration_seconds_count{job="call-router",route=~"/api/.*"}[5m]))
+          )
+        labels:
+          slo: call-router-latency
+      # "Bad" = slower than 500 ms = not in the le="0.5" bucket.
+      - record: slo:sli_error:ratio_rate30m
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{job="call-router",route=~"/api/.*",le="0.5"}[30m]))
+            /
+            sum(rate(http_request_duration_seconds_count{job="call-router",route=~"/api/.*"}[30m]))
+          )
+        labels:
+          slo: call-router-latency
+      # "Bad" = slower than 500 ms = not in the le="0.5" bucket.
+      - record: slo:sli_error:ratio_rate1h
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{job="call-router",route=~"/api/.*",le="0.5"}[1h]))
+            /
+            sum(rate(http_request_duration_seconds_count{job="call-router",route=~"/api/.*"}[1h]))
+          )
+        labels:
+          slo: call-router-latency
+      # "Bad" = slower than 500 ms = not in the le="0.5" bucket.
+      - record: slo:sli_error:ratio_rate2h
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{job="call-router",route=~"/api/.*",le="0.5"}[2h]))
+            /
+            sum(rate(http_request_duration_seconds_count{job="call-router",route=~"/api/.*"}[2h]))
+          )
+        labels:
+          slo: call-router-latency
+      # "Bad" = slower than 500 ms = not in the le="0.5" bucket.
+      - record: slo:sli_error:ratio_rate6h
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{job="call-router",route=~"/api/.*",le="0.5"}[6h]))
+            /
+            sum(rate(http_request_duration_seconds_count{job="call-router",route=~"/api/.*"}[6h]))
+          )
+        labels:
+          slo: call-router-latency
+      # "Bad" = slower than 500 ms = not in the le="0.5" bucket.
+      - record: slo:sli_error:ratio_rate1d
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{job="call-router",route=~"/api/.*",le="0.5"}[1d]))
+            /
+            sum(rate(http_request_duration_seconds_count{job="call-router",route=~"/api/.*"}[1d]))
+          )
+        labels:
+          slo: call-router-latency
+      # "Bad" = slower than 500 ms = not in the le="0.5" bucket.
+      - record: slo:sli_error:ratio_rate3d
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{job="call-router",route=~"/api/.*",le="0.5"}[3d]))
+            /
+            sum(rate(http_request_duration_seconds_count{job="call-router",route=~"/api/.*"}[3d]))
+          )
+        labels:
+          slo: call-router-latency
+      # "Bad" = slower than 500 ms = not in the le="0.5" bucket.
+      - record: slo:sli_error:ratio_rate30d
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{job="call-router",route=~"/api/.*",le="0.5"}[30d]))
+            /
+            sum(rate(http_request_duration_seconds_count{job="call-router",route=~"/api/.*"}[30d]))
+          )
+        labels:
+          slo: call-router-latency
+      - record: slo:error_budget_remaining:ratio
+        expr: 1 - (slo:sli_error:ratio_rate30d{slo="call-router-latency"} / 0.01)
+        labels:
+          slo: call-router-latency
+      # Handy for dashboards: p95 latency of API requests.
+      - record: route:http_request_duration_seconds:p95_rate5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le, route) (rate(http_request_duration_seconds_bucket{job="call-router",route=~"/api/.*"}[5m])))
+
+  # ---------------------------------------------------------------------------
+  - name: call-router-slo.alerts
+    rules:
+      - alert: CallRouterAvailabilityBudgetBurnFast
+        expr: |
+          slo:sli_error:ratio_rate1h{slo="call-router-availability"} > (14.4 * 0.005)
+          and
+          slo:sli_error:ratio_rate5m{slo="call-router-availability"} > (14.4 * 0.005)
+        for: 2m
+        labels:
+          severity: page
+          slo: call-router-availability
+          team: voice-platform
+        annotations:
+          summary: "call-router availability error budget burning 14.4x too fast"
+          description: >-
+            The availability SLI error ratio is {{ $value | humanizePercentage }} over the last 1h
+            (threshold 7.2%, i.e. 14.4x the 0.5% budget of the 99.5% availability SLO).
+            At this pace 2% of the 30-day error budget is spent in 1 hour.
+          runbook_url: https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterAvailabilityBudgetBurnFast.md
+      - alert: CallRouterAvailabilityBudgetBurnMedium
+        expr: |
+          slo:sli_error:ratio_rate6h{slo="call-router-availability"} > (6 * 0.005)
+          and
+          slo:sli_error:ratio_rate30m{slo="call-router-availability"} > (6 * 0.005)
+        for: 15m
+        labels:
+          severity: page
+          slo: call-router-availability
+          team: voice-platform
+        annotations:
+          summary: "call-router availability error budget burning 6x too fast"
+          description: >-
+            The availability SLI error ratio is {{ $value | humanizePercentage }} over the last 6h
+            (threshold 3%, i.e. 6x the 0.5% budget of the 99.5% availability SLO).
+            At this pace 5% of the 30-day error budget is spent in 6 hours.
+          runbook_url: https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterAvailabilityBudgetBurnMedium.md
+      - alert: CallRouterAvailabilityBudgetBurnSlow
+        expr: |
+          slo:sli_error:ratio_rate3d{slo="call-router-availability"} > (1 * 0.005)
+          and
+          slo:sli_error:ratio_rate6h{slo="call-router-availability"} > (1 * 0.005)
+        for: 1h
+        labels:
+          severity: ticket
+          slo: call-router-availability
+          team: voice-platform
+        annotations:
+          summary: "call-router availability error budget burning 1x too fast"
+          description: >-
+            The availability SLI error ratio is {{ $value | humanizePercentage }} over the last 3d
+            (threshold 0.5%, i.e. 1x the 0.5% budget of the 99.5% availability SLO).
+            At this pace 10% of the 30-day error budget is spent in 3 days.
+          runbook_url: https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterAvailabilityBudgetBurnSlow.md
+      - alert: CallRouterLatencyBudgetBurnFast
+        expr: |
+          slo:sli_error:ratio_rate1h{slo="call-router-latency"} > (14.4 * 0.01)
+          and
+          slo:sli_error:ratio_rate5m{slo="call-router-latency"} > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: page
+          slo: call-router-latency
+          team: voice-platform
+        annotations:
+          summary: "call-router latency error budget burning 14.4x too fast"
+          description: >-
+            The latency SLI error ratio is {{ $value | humanizePercentage }} over the last 1h
+            (threshold 14.4%, i.e. 14.4x the 1% budget of the 99% < 500 ms latency SLO).
+            At this pace 2% of the 30-day error budget is spent in 1 hour.
+          runbook_url: https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterLatencyBudgetBurnFast.md
+      - alert: CallRouterLatencyBudgetBurnMedium
+        expr: |
+          slo:sli_error:ratio_rate6h{slo="call-router-latency"} > (6 * 0.01)
+          and
+          slo:sli_error:ratio_rate30m{slo="call-router-latency"} > (6 * 0.01)
+        for: 15m
+        labels:
+          severity: page
+          slo: call-router-latency
+          team: voice-platform
+        annotations:
+          summary: "call-router latency error budget burning 6x too fast"
+          description: >-
+            The latency SLI error ratio is {{ $value | humanizePercentage }} over the last 6h
+            (threshold 6%, i.e. 6x the 1% budget of the 99% < 500 ms latency SLO).
+            At this pace 5% of the 30-day error budget is spent in 6 hours.
+          runbook_url: https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterLatencyBudgetBurnMedium.md
+      - alert: CallRouterLatencyBudgetBurnSlow
+        expr: |
+          slo:sli_error:ratio_rate3d{slo="call-router-latency"} > (1 * 0.01)
+          and
+          slo:sli_error:ratio_rate6h{slo="call-router-latency"} > (1 * 0.01)
+        for: 1h
+        labels:
+          severity: ticket
+          slo: call-router-latency
+          team: voice-platform
+        annotations:
+          summary: "call-router latency error budget burning 1x too fast"
+          description: >-
+            The latency SLI error ratio is {{ $value | humanizePercentage }} over the last 3d
+            (threshold 1%, i.e. 1x the 1% budget of the 99% < 500 ms latency SLO).
+            At this pace 10% of the 30-day error budget is spent in 3 days.
+          runbook_url: https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterLatencyBudgetBurnSlow.md
+
+  # ---------------------------------------------------------------------------
+  # Symptom alerts that SLOs can't see (no traffic -> no SLI at all).
+  - name: call-router.alerts
+    rules:
+      - alert: CallRouterDown
+        expr: absent(up{job="call-router"} == 1)
+        for: 2m
+        labels:
+          severity: page
+          team: voice-platform
+        annotations:
+          summary: "No call-router instance is being scraped successfully"
+          description: >-
+            Prometheus has had no healthy call-router target for 2 minutes. Either all pods
+            are down/scaled to 0, or scraping is broken. Incoming calls are likely failing.
+          runbook_url: https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterDown.md
+      - alert: CallRouterPodRestarting
+        expr: increase(kube_pod_container_status_restarts_total{container="call-router"}[15m]) > 3
+        labels:
+          severity: ticket
+          team: voice-platform
+        annotations:
+          summary: "call-router pod {{ $labels.pod }} is restarting frequently"
+          description: >-
+            Container restarted {{ $value | humanize }} times in 15 minutes (crash loop, OOMKill
+            or failing liveness probe).
+          runbook_url: https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterPodRestarting.md

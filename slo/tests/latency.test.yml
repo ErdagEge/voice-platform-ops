@@ -1,0 +1,45 @@
+# promtool unit tests for the latency SLO (99% of API requests < 500 ms).
+rule_files:
+  - ../call-router-slo.rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  # 1. Fast: 0.5% of requests slower than 500 ms -> fine.
+  - interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_bucket{job="call-router",route="/api/calls",method="POST",le="0.5"}'
+        values: '0+995x90'
+      - series: 'http_request_duration_seconds_count{job="call-router",route="/api/calls",method="POST"}'
+        values: '0+1000x90'
+    promql_expr_test:
+      # round() avoids floating-point noise like 0.0050000000000001
+      - expr: round(slo:sli_error:ratio_rate5m{slo="call-router-latency"}, 0.0001)
+        eval_time: 60m
+        exp_samples:
+          - labels: '{slo="call-router-latency"}'
+            value: 0.005
+    alert_rule_test:
+      - alertname: CallRouterLatencyBudgetBurnFast
+        eval_time: 60m
+        exp_alerts: []
+
+  # 2. Slow dependency: 20% of requests > 500 ms -> page (> 14.4 * 1%).
+  - interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_bucket{job="call-router",route="/api/calls",method="POST",le="0.5"}'
+        values: '0+800x90'
+      - series: 'http_request_duration_seconds_count{job="call-router",route="/api/calls",method="POST"}'
+        values: '0+1000x90'
+    alert_rule_test:
+      - alertname: CallRouterLatencyBudgetBurnFast
+        eval_time: 30m
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              slo: call-router-latency
+              team: voice-platform
+            exp_annotations:
+              summary: "call-router latency error budget burning 14.4x too fast"
+              description: "The latency SLI error ratio is 20% over the last 1h (threshold 14.4%, i.e. 14.4x the 1% budget of the 99% < 500 ms latency SLO). At this pace 2% of the 30-day error budget is spent in 1 hour."
+              runbook_url: "https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterLatencyBudgetBurnFast.md"
