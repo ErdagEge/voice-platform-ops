@@ -34,6 +34,13 @@ env:
   KUBECONFORM_VERSION: "v0.8.0"
   TRIVY_VERSION: "v0.76.0"
   KIND_VERSION: "v0.33.0"
+  PROMETHEUS_VERSION: "3.15.0" # only its `promtool` binary is used
+  # prometheus-operator version bundled with kube-prometheus-stack 92.10.1;
+  # we install just its ServiceMonitor CRD in the kind job (not the stack).
+  PROM_OPERATOR_VERSION: "v0.94.1"
+  # Community catalog of CRD JSON schemas, so kubeconform can validate
+  # ServiceMonitor objects too (it only knows built-in kinds by default).
+  CRD_SCHEMAS: "https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
   IMAGE_REPO: voice-platform-ops/call_router # local name inside CI
 
 jobs:
@@ -100,8 +107,33 @@ jobs:
           for v in values-local.yaml values-gke-dev.yaml values-gke-prod.yaml; do
             echo "== $v"
             helm template call-router deploy/helm/call-router -f "deploy/helm/call-router/$v" \
-              | kubeconform -strict -summary -
+              --api-versions monitoring.coreos.com/v1/ServiceMonitor \
+              | kubeconform -strict -summary -schema-location default -schema-location "$CRD_SCHEMAS" -
           done
+
+  # --------------------------------------------------------------------------
+  # SLO rules are code: syntax-check them and run their unit tests with
+  # promtool (feeds fake time series in, asserts which alerts fire). Cheap -
+  # no Prometheus server or cluster needed.
+  slo:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install promtool
+        run: |
+          curl -fsSL "https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz" \
+            | sudo tar xz -C /usr/local/bin --strip-components=1 "prometheus-${PROMETHEUS_VERSION}.linux-amd64/promtool"
+          promtool --version
+      - name: promtool check rules
+        run: promtool check rules slo/*.rules.yml
+      - name: promtool test rules (SLO alert unit tests)
+        run: promtool test rules slo/tests/*.test.yml
+      - name: Render + schema-check the PrometheusRule wrapper
+        run: |
+          curl -fsSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | sudo tar xz -C /usr/local/bin kubeconform
+          scripts/slo-prometheusrule.sh \
+            | kubeconform -strict -summary -schema-location default -schema-location "$CRD_SCHEMAS" -
 
   # --------------------------------------------------------------------------
   test:
@@ -129,7 +161,7 @@ jobs:
 
   # --------------------------------------------------------------------------
   build:
-    needs: [lint, test]
+    needs: [lint, test, slo]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -207,6 +239,13 @@ jobs:
           wait: 120s
       - name: Load image into the cluster nodes
         run: kind load image-archive "$RUNNER_TEMP/image.tar" --name voice-platform
+      # values-local.yaml enables a ServiceMonitor (rendered only if the CRD
+      # exists). Install just that CRD - a few KB, not the whole monitoring
+      # stack - so the deploy really creates and validates the object.
+      - name: Install the ServiceMonitor CRD only
+        run: |
+          kubectl apply --server-side -f "https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/${PROM_OPERATOR_VERSION}/example/prometheus-operator-crd/monitoring.coreos.com_servicemonitors.yaml"
+          kubectl wait --for condition=established --timeout=60s crd/servicemonitors.monitoring.coreos.com
       - name: Deploy (helm --atomic) + smoke test
         env:
           IMAGE_TAG: ${{ github.sha }}

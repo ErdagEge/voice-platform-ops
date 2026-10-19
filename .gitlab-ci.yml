@@ -48,6 +48,9 @@ variables:
   HELM_VERSION: "v3.22.1"
   CRANE_VERSION: "v0.22.1"
   COSIGN_VERSION: "v3.1.3"
+  PROMETHEUS_IMAGE: "prom/prometheus:v3.15.0" # ships promtool
+  # CRD JSON schemas so kubeconform can validate ServiceMonitor/PrometheusRule.
+  CRD_SCHEMAS: "https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
 
   # The image is always tagged with the commit SHA: every deploy is traceable
   # to exactly one commit, and redeploying an old SHA is a rollback.
@@ -126,8 +129,20 @@ helm:lint:
       for v in values-local.yaml values-gke-dev.yaml values-gke-prod.yaml; do
         echo "== $v"
         helm template call-router deploy/helm/call-router -f deploy/helm/call-router/$v \
-          | kubeconform -strict -summary -
+          --api-versions monitoring.coreos.com/v1/ServiceMonitor \
+          | kubeconform -strict -summary -schema-location default -schema-location "$CRD_SCHEMAS" -
       done
+
+# SLO rules are code: syntax-check them and run the promtool unit tests
+# (fake series in, assert which burn-rate alerts fire). No server needed.
+slo:promtool:
+  stage: lint
+  image:
+    name: $PROMETHEUS_IMAGE
+    entrypoint: [""] # the image's entrypoint is `prometheus`; we want a shell
+  script:
+    - promtool check rules slo/*.rules.yml
+    - promtool test rules slo/tests/*.test.yml
 
 scripts:shellcheck:
   stage: lint
@@ -150,7 +165,7 @@ elixir:test:
 # ----------------------------------------------------------------------------
 docker:build:
   stage: build
-  needs: [elixir:test, elixir:lint]
+  needs: [elixir:test, elixir:lint, slo:promtool]
   image: $DOCKER_IMAGE
   # A Docker daemon running as a side container ("Docker-in-Docker").
   services:
