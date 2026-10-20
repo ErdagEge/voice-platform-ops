@@ -1,30 +1,65 @@
 # CallRouterAvailabilityBudgetBurnFast
 
-> **Placeholder runbook.** The full incident-response process (roles, comms, postmortem template) is added in a later step.
-
 | | |
 |---|---|
-| Severity | `page` |
-| Source | [`slo/call-router-slo.rules.yml`](../../slo/call-router-slo.rules.yml) |
-| Dashboard | [call-router](http://localhost:3000/d/call-router/call-router) |
+| Severity | `page` (wake someone up) |
+| Alert rule | [`slo/call-router-slo.rules.yml`](../../slo/call-router-slo.rules.yml) |
+| Dashboard | [Grafana: call-router](http://localhost:3000/d/call-router/call-router) (`make grafana`) |
+| Escalation & roles | [docs/incident-response.md](../incident-response.md) |
 
 ## What it means
-More than 7.2% of API requests (14.4x the 0.5% error budget) have failed over both the last hour and the last 5 minutes. At this rate, 2% of the 30-day error budget is gone every hour.
+More API requests fail (HTTP 5xx) than the availability SLO allows: the error budget is burning **14.4x** too fast over both the long and the short window (1h and 5m), for at least 2m. That is 2% of the 30-day budget in 1 hour; the whole budget would be gone in about 2 days.
 
 ## Impact
-Callers can't be routed. Act now.
+Callers' calls are not being routed. At this speed it is an active outage or a severe partial outage.
 
-## First steps
-1. Was there a deploy in the last hour? Run `helm -n voice history call-router`. If so, roll back with `helm -n voice rollback call-router`.
-2. Check the error-rate panel and `call_router_errors_total` by `kind`. `injected` means fault injection is on: set `config.faultErrorRate` to 0.
-3. Open a failing request's trace from the logs (`trace_id`) in Grafana → Explore → Tempo.
+## Symptoms
+- *Error rate* panel above the dashed SLO line; *Availability burn rate* above 1.
+- `errors_total{kind=...}` rising on the *Errors by kind* panel.
+- Possibly reports from support / telephony partners about failed call setups.
 
-```bash
-kubectl -n voice get pods -o wide
-kubectl -n voice describe deploy/call-router
-kubectl -n voice logs -l app.kubernetes.io/name=call-router --tail=100 | grep -E '"status":5|error'
-helm -n voice history call-router
+## Dashboards and queries
+```promql
+# share of failing API requests (SLI), 5m
+slo:sli_error:ratio_rate5m{slo="call-router-availability"}
+# burn rates (1 = exactly on budget)
+slo:sli_error:ratio_rate1h{slo="call-router-availability"} / 0.005
+# error budget left over 30 days (1 = untouched, <0 = SLO missed)
+slo:error_budget_remaining:ratio{slo="call-router-availability"}
 ```
+```bash
+kubectl -n voice logs -l app.kubernetes.io/name=call-router --tail=200 | grep -E '"status":5|"level":"error"'
+```
+In Grafana, the **Logs** panel links every log line's `trace_id` to its trace in Tempo.
+
+## Diagnosis
+1. **Is it real?** Compare the error ratio panel with traffic. A handful of errors at very low traffic can look like a high ratio.
+2. **Which route and status?** `sum by (route, status) (rate(http_requests_total{job="call-router",status=~"5.."}[5m]))`
+3. **Why?** `sum by (kind) (rate(call_router_errors_total[5m]))`:
+   - `storage`: the database is the problem. Check `call_router_db_up` and go to [CallRouterDatabaseDown](CallRouterDatabaseDown.md).
+   - `injected`: fault injection is switched on (`config.faultErrorRate`). Check `helm -n voice get values call-router`.
+   - `server`: application bug, so look at the logs (below) and the last deploy.
+4. **Did something change?** `helm -n voice history call-router` and recent CI runs. A deploy within the last hour is the most likely cause.
+5. **One pod or all?** `sum by (pod) (rate(http_requests_total{status=~"5.."}[5m]))`. A single bad pod can be deleted; Kubernetes recreates it.
+
+## Mitigation
+Mitigate first, find the root cause later:
+- **Bad deploy:** `helm -n voice rollback call-router` (to the previous revision), then watch the error ratio.
+- **Fault injection left on:** `helm upgrade ... --reuse-values --set config.faultErrorRate=0`.
+- **Database:** follow [CallRouterDatabaseDown](CallRouterDatabaseDown.md).
+- **One bad pod:** `kubectl -n voice delete pod <pod>`.
+- **Overload:** scale out with `kubectl -n voice scale deploy/call-router --replicas=4` (or raise the HPA's minReplicas).
 
 ## Escalation
-If it isn't mitigated within 30 minutes (page) or 2 working days (ticket), escalate to the voice-platform on-call lead.
+- **0-15 min:** the on-call engineer acknowledges, opens an incident channel and takes the Incident Commander role ([incident response](../incident-response.md)).
+- **15 min, not mitigated:** page the secondary on-call / voice-platform lead.
+- **30 min, customer impact ongoing:** declare SEV1, involve the Communications Lead for customer updates.
+- Database or data loss suspected: involve the database owner immediately.
+
+## Verification (when is it over?)
+- `slo:sli_error:ratio_rate5m` back below 0.005 (0.5 %) and the 5m burn rate below 1.
+- The alert resolves on its own once the short window (5m) is clean. That is the point of the short window.
+- Note the budget spent (*SLO* row) in the incident ticket; if the budget is exhausted, freeze risky deploys ([SLO policy](../../README.md#observability--slos)).
+
+## Related
+Postmortem example: [2026-10-20 database outage](../postmortems/2026-10-20-database-outage.md).
