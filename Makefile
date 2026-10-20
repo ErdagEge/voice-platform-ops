@@ -106,6 +106,7 @@ rollback-demo: ## Deploy a broken release to kind and show --atomic rolling it b
 ci-lint: ## Lint the CI definitions (actionlint + shellcheck)
 	actionlint
 	shellcheck scripts/*.sh
+	shellcheck -x chaos/*.sh
 
 # ---- Observability (local kind, all OSS) -----------------------------------
 OBS_NS  := monitoring

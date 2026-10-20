@@ -68,8 +68,8 @@ jobs:
           mix deps.get
           mix format --check-formatted
           mix credo --strict
-      - name: Shellcheck scripts
-        run: shellcheck scripts/*.sh
+      - name: Shellcheck scripts + chaos experiments
+        run: shellcheck scripts/*.sh && shellcheck -x chaos/*.sh
       - name: Hadolint Dockerfile
         run: docker run --rm -i hadolint/hadolint:v2.14.0 < app/Dockerfile
       - name: Actionlint workflows
@@ -295,6 +295,19 @@ jobs:
         run: scripts/rollback-demo.sh
       - name: Smoke test again after rollback
         run: BASE_URL=http://localhost:8080 scripts/ci-smoke.sh
+      - name: Chaos smoke (delete a pod under load, max 1% errors, no lost calls)
+        # Same script as the local chaos experiment 01, in its deterministic mode:
+        # a normal pod delete (preStop + SIGTERM) must not drop requests or data.
+        env:
+          MODE: graceful
+          DURATION: "40"
+          WORKERS: "2"
+          MAX_ERROR_PCT: "1"
+        run: |
+          rc=0
+          chaos/01-pod-kill.sh || rc=$?
+          cat chaos/results/01-pod-kill-graceful.md >> "$GITHUB_STEP_SUMMARY" || true
+          exit "$rc"
       - name: Debug info on failure
         if: failure()
         run: |

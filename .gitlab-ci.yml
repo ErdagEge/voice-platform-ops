@@ -156,6 +156,7 @@ scripts:shellcheck:
   image: koalaman/shellcheck-alpine:v0.11.0
   script:
     - shellcheck scripts/*.sh
+    - shellcheck -x chaos/*.sh   # -x: follow `source chaos/lib.sh`
 
 # ----------------------------------------------------------------------------
 # test
