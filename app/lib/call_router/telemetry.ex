@@ -14,6 +14,7 @@ defmodule CallRouter.Telemetry do
     * `http_request_duration_seconds_bucket{method,route,le}` histogram
     * `call_router_calls_routed_total{queue}`                 counter
     * `call_router_errors_total{kind}`                        counter
+    * `call_router_db_up`                                     gauge (1/0)
     * `vm_memory_total_bytes`, `vm_run_queue_total`           gauges
 
   `route` is the *route template* (`/api/calls/:id`), never the raw path, so
@@ -73,7 +74,12 @@ defmodule CallRouter.Telemetry do
       counter("call_router.errors.total",
         event_name: [:call_router, :error],
         tags: [:kind],
-        description: "Errors by kind (validation, injected, server)"
+        description: "Errors by kind (validation, injected, storage, server)"
+      ),
+      last_value("call_router.db.up",
+        event_name: [:call_router, :db],
+        measurement: :up,
+        description: "1 if this pod can query PostgreSQL, else 0 (see CallRouter.DbHealth)"
       ),
       last_value("vm.memory.total.bytes",
         event_name: [:vm, :memory],

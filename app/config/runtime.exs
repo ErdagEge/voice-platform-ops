@@ -34,6 +34,26 @@ if endpoint = System.get_env("OTEL_EXPORTER_OTLP_ENDPOINT") do
     otlp_endpoint: endpoint
 end
 
+# Database: with DATABASE_URL set (always on Kubernetes), calls go to
+# PostgreSQL; without it they stay in memory (handy for a quick `mix run`).
+# On kind/GKE the URL comes from the Secret CloudNativePG creates.
+if config_env() != :test do
+  if url = System.get_env("DATABASE_URL") do
+    config :call_router, CallRouter.Repo,
+      url: url,
+      pool_size: String.to_integer(System.get_env("POOL_SIZE", "5")),
+      # Fail fast instead of queueing forever when the DB is gone.
+      queue_target: 500,
+      queue_interval: 1_000,
+      # TLS on GKE/Cloud SQL; CNPG on kind accepts plain connections in-cluster.
+      ssl: System.get_env("DATABASE_SSL", "false") == "true"
+
+    config :call_router,
+      store: :postgres,
+      run_migrations: System.get_env("RUN_MIGRATIONS", "true") == "true"
+  end
+end
+
 if level = System.get_env("LOG_LEVEL") do
   config :logger, level: String.to_existing_atom(level)
 end

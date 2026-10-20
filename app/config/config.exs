@@ -21,4 +21,10 @@ config :opentelemetry,
   resource: [service: [name: "call-router"]],
   traces_exporter: :none
 
+# Ecto: which repos `mix ecto.*` tasks and migrations act on.
+config :call_router, ecto_repos: [CallRouter.Repo]
+
+# Store calls in memory unless a database is configured (runtime.exs/test.exs).
+config :call_router, store: :memory
+
 import_config "#{config_env()}.exs"

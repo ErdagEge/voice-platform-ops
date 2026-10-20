@@ -1,12 +1,19 @@
 defmodule CallRouter.RouterTest do
-  # async: false because the ETS tables are shared global state.
+  # async: false: metrics live in shared global ETS tables.
   use ExUnit.Case, async: false
+  alias Ecto.Adapters.SQL.Sandbox
   import Plug.Test
   import Plug.Conn
 
   alias CallRouter.Router
 
   @opts Router.init([])
+
+  setup do
+    :ok = Sandbox.checkout(CallRouter.Repo)
+    Sandbox.mode(CallRouter.Repo, {:shared, self()})
+    :ok
+  end
 
   defp call(conn), do: Router.call(conn, @opts)
   defp body(conn), do: Jason.decode!(conn.resp_body)

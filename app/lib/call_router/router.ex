@@ -51,8 +51,15 @@ defmodule CallRouter.Router do
 
   get "/api/calls/:id" do
     case CallStore.get(id) do
-      {:ok, call} -> json(conn, 200, call)
-      :error -> json(conn, 404, %{error: "call not found"})
+      {:ok, call} ->
+        json(conn, 200, call)
+
+      {:error, :not_found} ->
+        json(conn, 404, %{error: "call not found"})
+
+      {:error, :unavailable} ->
+        error(:storage)
+        json(conn, 503, %{error: "storage unavailable"})
     end
   end
 
@@ -75,11 +82,19 @@ defmodule CallRouter.Router do
 
     case decision do
       {:ok, call} ->
-        Tracer.with_span("call_store.put", do: CallStore.put(call))
-        :telemetry.execute([:call_router, :call, :routed], %{count: 1}, %{queue: call.queue})
-        Tracing.set_attributes(%{"call.id": call.call_id, "call.queue": call.queue})
-        Logger.info("call routed", call_id: call.call_id)
-        json(conn, 201, call)
+        case Tracer.with_span("call_store.put", do: CallStore.put(call)) do
+          {:ok, call} ->
+            :telemetry.execute([:call_router, :call, :routed], %{count: 1}, %{queue: call.queue})
+            Tracing.set_attributes(%{"call.id": call.call_id, "call.queue": call.queue})
+            Logger.info("call routed", call_id: call.call_id)
+            json(conn, 201, call)
+
+          {:error, :unavailable} ->
+            # Counted twice on purpose: errors_total{kind="storage"} says *why*,
+            # the 503 itself burns the availability error budget.
+            error(:storage)
+            json(conn, 503, %{error: "storage unavailable"})
+        end
 
       {:error, reason} ->
         error(:validation)

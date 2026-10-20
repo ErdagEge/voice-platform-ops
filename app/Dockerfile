@@ -51,6 +51,8 @@ RUN mix deps.compile
 
 # Now copy the application source and compile it.
 COPY lib lib
+# priv/ holds the database migrations; the release ships them.
+COPY priv priv
 RUN mix compile
 
 # runtime.exs is read at container start (PORT, LOG_LEVEL), so it is copied

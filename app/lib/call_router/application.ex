@@ -18,10 +18,10 @@ defmodule CallRouter.Application do
     OpentelemetryBandit.setup()
 
     children =
-      [
-        CallRouter.Telemetry,
-        CallRouter.CallStore
-      ] ++ server_children(port)
+      [CallRouter.Telemetry] ++
+        CallRouter.CallStore.children() ++
+        [CallRouter.DbHealth] ++
+        server_children(port)
 
     opts = [strategy: :one_for_one, name: CallRouter.Supervisor]
     result = Supervisor.start_link(children, opts)

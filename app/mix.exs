@@ -8,6 +8,7 @@ defmodule CallRouter.MixProject do
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      aliases: aliases(),
       releases: releases()
     ]
   end
@@ -35,6 +36,14 @@ defmodule CallRouter.MixProject do
     ]
   end
 
+  # `mix test` first creates and migrates the test database (needs Postgres,
+  # see config/test.exs; CI provides one as a service container).
+  defp aliases do
+    [
+      test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"]
+    ]
+  end
+
   defp deps do
     [
       # Bandit is the HTTP server (accepts TCP connections, speaks HTTP).
@@ -43,6 +52,10 @@ defmodule CallRouter.MixProject do
       {:plug, "~> 1.16"},
       # Jason encodes/decodes JSON.
       {:jason, "~> 1.4"},
+      # --- Database ----------------------------------------------------------
+      # Ecto = queries, schemas, migrations; Postgrex = the PostgreSQL driver.
+      {:ecto_sql, "~> 3.13"},
+      {:postgrex, "~> 0.20"},
       # --- Metrics ---------------------------------------------------------
       # :telemetry is the standard Erlang/Elixir event bus: code emits events,
       # reporters subscribe. telemetry_metrics describes metrics (counter,

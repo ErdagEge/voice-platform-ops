@@ -1,37 +1,54 @@
 defmodule CallRouter.CallStore do
   @moduledoc """
-  In-memory call storage backed by ETS (Erlang Term Storage).
+  Where routed calls are stored. A *behaviour* (Elixir's word for an
+  interface) with two implementations:
 
-  A GenServer *owns* the ETS table (the table dies if its owner dies), while
-  reads/writes go straight to the table for speed. Data is lost on restart -
-  that is intentional for now; a real system would use a database.
+    * `CallRouter.CallStore.Postgres` - the real one, used whenever
+      `DATABASE_URL` is set (always on Kubernetes). Every replica sees the
+      same data, and it survives restarts, so backups/DR make sense.
+    * `CallRouter.CallStore.Memory` - ETS fallback for running the app
+      without a database.
+
+  Callers use this module; it forwards to the backend chosen in config
+  (`config :call_router, store: :postgres | :memory`).
   """
-  use GenServer
 
-  @table :call_router_calls
+  @typedoc "A routed call as returned by the API."
+  @type call :: %{required(:call_id) => String.t(), optional(atom()) => term()}
 
-  def start_link(_opts), do: GenServer.start_link(__MODULE__, nil, name: __MODULE__)
+  @callback put(call()) :: {:ok, call()} | {:error, :unavailable}
+  @callback get(String.t()) :: {:ok, call()} | {:error, :not_found | :unavailable}
+  @callback ready?() :: boolean()
 
-  @doc "Store (or overwrite) a call map keyed by its id."
-  def put(%{call_id: id} = call) do
-    :ets.insert(@table, {id, call})
-    call
-  end
+  def put(call), do: backend().put(call)
+  def get(id), do: backend().get(id)
+  def ready?, do: backend().ready?()
 
-  @doc "Fetch a call by id."
-  def get(id) do
-    case :ets.lookup(@table, id) do
-      [{^id, call}] -> {:ok, call}
-      [] -> :error
+  @doc "The configured backend module."
+  def backend do
+    case Application.get_env(:call_router, :store, :memory) do
+      :postgres -> CallRouter.CallStore.Postgres
+      :memory -> CallRouter.CallStore.Memory
+      # Any module implementing the behaviour (tests use a failing fake).
+      module when is_atom(module) -> module
     end
   end
 
-  @doc "True when the table exists - used by the readiness probe."
-  def ready?, do: :ets.whereis(@table) != :undefined
+  @doc "Processes the backend needs in the supervision tree."
+  def children do
+    case Application.get_env(:call_router, :store, :memory) do
+      :postgres ->
+        # Repo = connection pool. Ecto.Migrator runs pending migrations at
+        # boot (Postgres advisory lock, so 2 pods starting together is safe).
+        [
+          CallRouter.Repo,
+          {Ecto.Migrator,
+           repos: [CallRouter.Repo],
+           skip: !Application.get_env(:call_router, :run_migrations, true)}
+        ]
 
-  @impl true
-  def init(nil) do
-    :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
-    {:ok, nil}
+      :memory ->
+        [CallRouter.CallStore.Memory]
+    end
   end
 end
