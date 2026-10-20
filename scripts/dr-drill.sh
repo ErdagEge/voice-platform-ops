@@ -4,7 +4,10 @@
 #
 #   1. write known calls (set A), take a backup
 #   2. keep writing one call per second for TRICKLE_SECONDS (set B)
-#   3. DISASTER: delete the whole namespace (DB pods, volumes, app, secrets)
+#   3. DISASTER: delete the whole namespace (DB pods, volumes, app, secrets).
+#      DISASTER=crash (default) also SIGKILLs the PostgreSQL pods at the same
+#      moment, so nothing gets a clean shutdown (= lost node/disk, worst case).
+#      DISASTER=graceful lets PostgreSQL shut down cleanly (archives last WAL).
 #   4. restore: S3 credentials -> DB from backup + WAL -> app -> alert rules
 #   5. verify every call of set A is back; count which calls of set B survived
 #
@@ -18,8 +21,9 @@ export NAMESPACE="${NAMESPACE:-voice}"
 BASE_URL="${BASE_URL:-http://localhost:8080}"
 CALLS_BEFORE="${CALLS_BEFORE:-20}"
 TRICKLE_SECONDS="${TRICKLE_SECONDS:-75}"
+DISASTER="${DISASTER:-crash}"
 WORK="$(mktemp -d)"
-REPORT="${REPORT:-$ROOT/docs/dr-drills/$(date +%Y-%m-%d-%H%M)-dr-drill.md}"
+REPORT="${REPORT:-$ROOT/docs/dr-drills/$(date +%Y-%m-%d-%H%M)-dr-drill-$DISASTER.md}"
 log() { printf '[dr-drill] %s %s\n' "$(date +%T)" "$*"; }
 now() { date +%s.%N; }
 hms() { date -d "@${1%.*}" +%T; }
@@ -49,8 +53,13 @@ end=$(( $(date +%s) + TRICKLE_SECONDS ))
 while [ "$(date +%s)" -lt "$end" ]; do write_call "$WORK/b.txt" || true; sleep 1; done
 t_last_write=$(now)
 
-log "3/5 DISASTER: kubectl delete namespace $NAMESPACE"
+log "3/5 DISASTER ($DISASTER): kubectl delete namespace $NAMESPACE"
 t_disaster=$(now)
+if [ "$DISASTER" = crash ]; then
+  # Terminating namespace = nothing gets recreated; then kill PostgreSQL hard.
+  kubectl delete namespace "$NAMESPACE" --wait=false >/dev/null
+  kubectl -n "$NAMESPACE" delete pod -l cnpg.io/cluster=call-router-db --grace-period=0 --force >/dev/null 2>&1 || true
+fi
 kubectl delete namespace "$NAMESPACE" --wait=true --timeout=5m >/dev/null
 t_gone=$(now)
 log "    namespace gone after $(secs "$t_gone" "$t_disaster")s; API: $(curl -s -o /dev/null -w '%{http_code}' -m 3 "$BASE_URL/healthz" || true)"
@@ -80,8 +89,8 @@ mkdir -p "$(dirname "$REPORT")"
 cat >"$REPORT" <<MD
 # DR drill $(date '+%Y-%m-%d %H:%M %Z')
 
-Scenario: the whole \`$NAMESPACE\` namespace is deleted (PostgreSQL primary + replica
-and their volumes, app, Secrets, alert rules). Restore from the S3 backup store.
+Scenario (\`DISASTER=$DISASTER\`): the whole \`$NAMESPACE\` namespace is deleted (PostgreSQL
+primary + replica and their volumes, app, Secrets, alert rules)$([ "$DISASTER" = crash ] && echo ", and the PostgreSQL pods are SIGKILLed at the same moment (no clean shutdown, like losing the node)"). Restore from the S3 backup store.
 
 | Step | Time ($(date +%Z)) |
 |---|---|
@@ -95,7 +104,7 @@ and their volumes, app, Secrets, alert rules). Restore from the S3 backup store.
 |---|---|
 | Restored from backup folder | \`$old_server\` → new cluster archives to \`$new_server\` |
 | Set A (written before the backup) | **$a_ok / $a_total** recovered |
-| Set B (1/s for ${TRICKLE_SECONDS}s after the backup) | **$b_ok / $b_total** recovered${first_lost:+ (first lost call created at $first_lost)} |
+| Set B (1/s for ${TRICKLE_SECONDS}s after the backup) | **$b_ok / $b_total** recovered${first_lost:+ (first lost call created at $first_lost, UTC)} |
 | **RPO** (last write → newest recovered call) | **${rpo}s** |
 | **RTO** (disaster → smoke test passing) | **${rto}s** |
 | Verdict | **$result** |
