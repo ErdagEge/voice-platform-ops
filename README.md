@@ -411,8 +411,11 @@ make obs-down            # remove the stack
 | `…BudgetBurnMedium` | 6× | 6h and 30m | 15m | page | 5 % in 6 hours |
 | `…BudgetBurnSlow` | 1× | 3d and 6h | 1h | ticket | 10 % in 3 days |
 
-Plus two symptom alerts, `CallRouterDown` (no healthy target for 2m) and
-`CallRouterPodRestarting` (more than 3 restarts in 15m). Alertmanager routes
+Plus symptom alerts: `CallRouterDown` (no healthy target for 2m),
+`CallRouterNoReadyPods` (no pod can take traffic for 1m) and
+`CallRouterPodRestarting` (more than 3 restarts in 15m), and data-layer alerts for
+the database, its replica, WAL archiving and backups
+([`slo/call-router-reliability.rules.yml`](slo/call-router-reliability.rules.yml)). Alertmanager routes
 `severity=page` to a `pager` receiver and `severity=ticket` to `tickets`. These
 are empty placeholders here; in production they would be PagerDuty/Opsgenie and
 a ticket queue. A firing page suppresses the ticket alert for the same SLO.
@@ -478,6 +481,100 @@ full stack.
 - **Rules as code.** The SLO rules are a plain file checked by
   `promtool check rules` and unit-tested with `promtool test rules` in both
   pipelines, the same way the Elixir code is tested.
+
+## Reliability
+
+The app keeps its calls in **PostgreSQL**, run inside Kubernetes by the
+[CloudNativePG](https://cloudnative-pg.io/) operator: one *primary* (takes the writes)
+and one *replica* (a live copy on another node), with continuous backups to an S3
+bucket. On kind the bucket is [SeaweedFS](deploy/backup-store/seaweedfs.yaml); on GKE it
+would be a GCS bucket (or Cloud SQL, see [docs/dr.md](docs/dr.md#gke--cloud-sql-equivalent)).
+Everything below runs on the local kind cluster, at no cost.
+
+```bash
+make kind-up obs-up db-operators-up backup-store-up db-up kind-load deploy
+```
+
+### Backup & DR
+
+**RPO** (*Recovery Point Objective*) is how much recent data you can lose; **RTO**
+(*Recovery Time Objective*) is how long you may be down while recovering. PostgreSQL
+writes every change to its *write-ahead log (WAL)*; those files are uploaded as they
+fill up (at least every 60 s), plus a full *base backup* every hour. A restore starts a
+new database from the base backup and replays the WAL, up to any second you choose
+(*point-in-time recovery*).
+
+`scripts/dr-drill.sh` proves it end to end: write known calls, **delete the whole
+`voice` namespace**, restore with `scripts/restore.sh`, then count which calls came back.
+Results from [docs/dr.md](docs/dr.md) (2026-10-20, kind):
+
+| Drill | Calls before backup | Calls after backup (WAL only) | RPO (data lost) | RTO (disaster → smoke test OK) |
+|---|---|---|---|---|
+| Graceful delete | 20/20 | 74/74 | **1 s** | **176 s** (108 s of it: waiting for a clean PostgreSQL shutdown) |
+| Crash (PostgreSQL SIGKILLed) | 20/20 | 58/74 | **17 s** | **99 s** |
+
+Targets: RPO ≤ 60 s, RTO ≤ 15 min (DB lost) and ≤ 1 min when only the primary dies
+(measured: 22 s failover, 0 calls lost). The crash drill is the honest number: the
+last 17 s of writes were still in a WAL file that hadn't been uploaded yet.
+Details, the restore runbook and the Cloud SQL equivalent: [docs/dr.md](docs/dr.md);
+drill reports: [docs/dr-drills/](docs/dr-drills/).
+
+### Chaos experiments
+
+A chaos experiment breaks something **on purpose, under load**, to check a written-down
+guess (*hypothesis*) about what will happen. Each script in [`chaos/`](chaos/) runs a
+load generator (POST + GET calls), injects the fault, measures what callers saw,
+reads every created call back (data loss check) and writes a report to
+[`chaos/results/`](chaos/results/). A `FAIL` is not a bad thing here: it's a gap found
+in a test instead of in production.
+
+| # | Experiment | Result | Verdict |
+|---|---|---|---|
+| 01 | Kill an app pod: graceful / force / SIGKILL | 0 / 0 / 126 errors (0.52 %), Ready again in 6-7 s, 0 calls lost | [PASS](chaos/results/01-pod-kill-graceful.md) ([force](chaos/results/01-pod-kill-force.md), [sigkill](chaos/results/01-pod-kill-sigkill.md)) |
+| 02 | Drain a node (planned maintenance) | Replica's node: 0 errors. Primary's node: 72 s write outage (lease handover + promotion), 0 calls lost | [PASS / FAIL](chaos/results/02-node-drain.md) |
+| 03 | Node dies (container stopped for 120 s) | 1.68 % errors over 162 s, new DB primary after 83 s, 0 calls lost; app pod crash-looped on DNS after the node came back | [FAIL](chaos/results/03-node-failure.md) |
+| 04 | Kill the PostgreSQL primary | New primary after 22 s, 21 s of errors (0.19 %), 0 calls lost | [PASS](chaos/results/04-db-failover.md) |
+| 05 | Database fully down for ~3 min | Pods NotReady in 12 s, `CallRouterDatabaseDown` paged after 94 s, back 12 s after the DB, 0 calls lost; **SLO alerts blind** | [PASS + finding](chaos/results/05-db-down-fence.md) ([hibernate run](chaos/results/05-db-down-hibernate.md)) |
+| 06 | +600 ms on every `POST /api/calls` | 0 errors, 5-min latency SLI 50 % bad, but the fast-burn page did not fire in 8 min (1-h window diluted) | [FAIL](chaos/results/06-latency.md) |
+
+CI runs experiment 01 (graceful mode, max 1 % errors) on every pipeline in the kind job,
+so a change that breaks graceful shutdown fails the build.
+
+### Incident response, runbooks and postmortems
+
+- **[Incident response](docs/incident-response.md):** severities (SEV1-4), roles
+  (Incident Commander, Operations Lead, Communications Lead), the on-call flow and the
+  error-budget policy. Short checklists, because people under stress don't read long documents.
+- **[Runbooks](docs/runbooks/):** one per alert, linked from the alert itself
+  (`runbook_url`). Each one says what the alert means, the impact, which queries to run,
+  how to diagnose, how to mitigate, when to escalate and how to know it's over.
+- **[Postmortems](docs/postmortems/):** *blameless* write-ups (they look for what in the
+  system allowed the failure, not for who to blame) with a timeline, impact on the error
+  budget, root cause (five whys) and action items with owners. The
+  [first one](docs/postmortems/2026-10-20-database-outage.md) comes from chaos experiment 05:
+  the availability SLO only counts requests the app answered, so when *every* pod is
+  NotReady nobody is counted and the SLO looks fine. Action item 1 shipped as the
+  `CallRouterNoReadyPods` alert, with a promtool test and a
+  [runbook](docs/runbooks/CallRouterNoReadyPods.md).
+
+## What this project demonstrates
+
+How the pieces map to a DevOps/SRE role on a voice/telephony platform (e.g. Enreach):
+
+| Skill | Where to look |
+|---|---|
+| **Kubernetes on GKE** | Helm chart with probes, resources, HPA, PDB, hard pod spreading, graceful shutdown ([`deploy/helm/call-router`](deploy/helm/call-router)); same chart on kind and GKE (`values-gke-*.yaml`) |
+| **Terraform** | GKE cluster, VPC, node pools, Artifact Registry as modules with dev/prod envs ([`infra/terraform`](infra/terraform)); fmt, validate, tflint and Trivy in CI (validated offline, never applied: no cloud account needed) |
+| **GitLab CI/CD** | [`.gitlab-ci.yml`](.gitlab-ci.yml) (lint → test → build → scan → deploy) and the same pipeline on [GitHub Actions](.github/workflows/ci.yml), which really deploys to a throwaway kind cluster, smoke-tests, demos a rollback and runs a chaos test |
+| **Monitoring, logging, tracing, alerting** | Prometheus, Grafana, Alertmanager, Loki logs and Tempo traces linked by `trace_id` ([`deploy/observability`](deploy/observability)); alert routing page vs ticket |
+| **SLOs** | Availability and latency SLOs, error budgets, multi-window burn-rate alerts, all unit-tested with `promtool` ([`slo/`](slo/)) |
+| **Backup, restore, DR** | CloudNativePG with WAL archiving + base backups, PITR restore, a scripted DR drill with measured RPO/RTO ([`docs/dr.md`](docs/dr.md)) |
+| **Incident response** | Severities, roles, on-call flow, runbook per alert, blameless postmortem with action items that were actually shipped ([`docs/`](docs/)) |
+| **Reliability testing** | Six chaos experiments with honest PASS/FAIL results ([`chaos/results/`](chaos/results/)) |
+| **Security** | Non-root (UID 10001) slim Debian image, read-only root filesystem, all capabilities dropped, seccomp; Trivy image + IaC scans that fail the build, SBOM, keyless cosign signing, pinned action SHAs; no long-lived cloud keys (OIDC / Workload Identity Federation design); DB credentials only from Kubernetes Secrets |
+| **Documentation** | This README, runbooks, DR plan, incident process and postmortems, written for someone new to the system |
+| **Elixir / BEAM** | The `call_router` service: Plug + Bandit, Ecto/PostgreSQL, telemetry → Prometheus metrics and OpenTelemetry traces, ExUnit tests, Credo |
+| **Docker** | Multi-stage build (the runtime image only gets the finished release), docker compose with PostgreSQL for local runs, Hadolint ([`app/Dockerfile`](app/Dockerfile)) |
 
 ## License
 
