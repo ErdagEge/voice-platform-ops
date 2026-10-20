@@ -33,13 +33,14 @@ cnpg_pg_replication_streaming_replicas
 ```
 
 ## Diagnosis
-1. **Is PostgreSQL running at all?** No DB pods: check whether the cluster was hibernated (`cnpg.io/hibernation=on` annotation), deleted, or whether the nodes are gone.
+1. **Is PostgreSQL running at all?** No DB pods: check whether the cluster was hibernated (`cnpg.io/hibernation=on` annotation), deleted, or whether the nodes are gone. Pods running but `postgres` not ready: check for a `cnpg.io/fencedInstances` annotation (instances deliberately stopped).
 2. **Pods there but not Ready?** Read the `postgres` container logs: is the disk full (`No space left on device`), is a failover in progress, or is it crash recovery (replaying WAL)?
 3. **Pods healthy but the app can't connect?** Check the `call-router-db-rw` Service has an endpoint, and that the `call-router-db-app` Secret is unchanged (password rotated?).
 4. **Failover stuck?** `kubectl -n voice get cluster call-router-db -o jsonpath='{.status.phase}'` shows *Failing over* for > 1 min: look at the operator logs (`kubectl -n cnpg-system logs deploy/cnpg-cloudnative-pg`).
 
 ## Mitigation
 - **Hibernated:** `kubectl -n voice annotate cluster call-router-db --overwrite cnpg.io/hibernation=off`.
+- **Fenced** (`cnpg.io/fencedInstances` annotation present - someone stopped PostgreSQL for maintenance or forensics): confirm with whoever set it, then `kubectl -n voice annotate cluster call-router-db cnpg.io/fencedInstances-`.
 - **Primary dead, replica healthy:** CNPG fails over automatically within seconds; if not, promote manually with `kubectl cnpg promote call-router-db call-router-db-2`.
 - **Disk full:** increase `storage.size` (online resize where the storage class supports it), or delete WAL that is already archived (only on CNPG's advice; never by hand).
 - **Database lost** (volumes gone or corrupt): restore from backup with `make db-down && scripts/restore.sh` ([DR](../dr.md)). Decide with the IC: a restore loses up to RPO (about 1 minute) of data.
@@ -57,4 +58,4 @@ cnpg_pg_replication_streaming_replicas
 - Check that no acknowledged call was lost: compare `SELECT count(*) FROM calls` before/after if a restore happened.
 
 ## Related
-This exact alert fired in [chaos experiment 05](../../chaos/results/05-db-down.md) → [postmortem](../postmortems/2026-10-20-database-outage.md).
+This exact alert fired in [chaos experiment 05](../../chaos/results/05-db-down-fence.md) → [postmortem](../postmortems/2026-10-20-database-outage.md).

@@ -18,6 +18,7 @@ How incidents are run (severity, roles, comms): [incident-response.md](../incide
 | [CallRouterDown](CallRouterDown.md) | page | symptom |
 | [CallRouterPodRestarting](CallRouterPodRestarting.md) | ticket | symptom |
 | [CallRouterDatabaseDown](CallRouterDatabaseDown.md) | page | data layer |
+| [CallRouterNoReadyPods](CallRouterNoReadyPods.md) | page | symptom (no Ready pod) |
 | [CallRouterDatabaseNoReplica](CallRouterDatabaseNoReplica.md) | ticket | data layer |
 | [CallRouterWALArchivingFailing](CallRouterWALArchivingFailing.md) | page | data layer |
 | [CallRouterBackupFailed](CallRouterBackupFailed.md) (also `CallRouterBackupTooOld`) | ticket | data layer |
