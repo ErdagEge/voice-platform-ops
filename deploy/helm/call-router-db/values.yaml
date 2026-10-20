@@ -50,10 +50,12 @@ backup:
   destinationPath: s3://backups/cnpg
   # Secret with ACCESS_KEY_ID / ACCESS_SECRET_KEY (scripts/backup-store-up.sh).
   credentialsSecret: backup-s3-credentials
-  # Folder name for this cluster's WALs/backups inside destinationPath. A
-  # restored cluster must archive under a NEW name (Barman refuses to mix two
-  # timelines' histories), see recovery.* below.
-  serverName: call-router-db
+  # Folder for this cluster's WALs/backups inside destinationPath. Every NEW
+  # cluster (fresh or restored) needs its own folder: Barman refuses to
+  # archive into a folder that already holds another cluster's history.
+  # scripts/db-up.sh picks "call-router-db-<UTC timestamp>" for new clusters
+  # and keeps the current one on upgrades. Empty = the cluster name.
+  serverName: ""
   retentionPolicy: 7d
   # Base backups. CNPG cron has a seconds field: sec min hour dom mon dow.
   schedule: "0 0 * * * *" # hourly, on the hour

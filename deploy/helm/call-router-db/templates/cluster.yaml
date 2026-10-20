@@ -32,7 +32,7 @@ spec:
       isWALArchiver: true
       parameters:
         barmanObjectName: {{ include "call-router-db.objectStore" . }}
-        serverName: {{ .Values.backup.serverName }}
+        serverName: {{ .Values.backup.serverName | default .Values.name }}
   {{- end }}
   bootstrap:
   {{- if .Values.recovery.enabled }}
