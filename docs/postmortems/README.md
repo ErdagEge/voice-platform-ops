@@ -11,4 +11,4 @@ severities: [incident-response.md](../incident-response.md).
 
 | Date | Incident | Severity | Duration | Budget used | Found by |
 |---|---|---|---|---|---|
-| 2026-10-20 | [Database unavailable → API down](2026-10-20-database-outage.md) | SEV2 | 3 min 6 s | 1.4 % (availability) | chaos game day, experiment 05 |
+| 2026-10-20 | [Database unavailable → API down](2026-10-20-database-outage.md) | SEV1 | 3 min 6 s | 1.4 % (availability) | chaos game day, experiment 05 |

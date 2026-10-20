@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Final |
-| **Severity** | SEV2 (full API outage, < 5 min, no data loss) |
+| **Severity** | SEV1 (full API outage: calls failed for all customers; < 5 min, no data loss) |
 | **Date** | 2026-10-20 |
 | **Duration** | 3 min 6 s of failed calls (21:32:26 → 21:35:32 CEST) |
 | **Customer impact** | 100 % of new calls failed (connection refused/timeout); no stored call lost |
