@@ -157,6 +157,14 @@ elixir:test:
   extends: .elixir
   stage: test
   needs: [] # start immediately, don't wait for lint
+  # PostgreSQL as a side container, reachable as host "postgres".
+  services:
+    - name: postgres:17-alpine
+      alias: postgres
+  variables:
+    MIX_ENV: test
+    POSTGRES_PASSWORD: postgres
+    DATABASE_URL: ecto://postgres:postgres@postgres:5432/call_router_test
   script:
     - mix test
 

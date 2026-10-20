@@ -138,6 +138,17 @@ jobs:
   # --------------------------------------------------------------------------
   test:
     runs-on: ubuntu-24.04
+    # A throwaway PostgreSQL next to the job; tests run inside rolled-back
+    # transactions (Ecto SQL sandbox), so the data never matters.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
@@ -155,6 +166,7 @@ jobs:
         working-directory: app
         env:
           MIX_ENV: test
+          DATABASE_URL: ecto://postgres:postgres@localhost:5432/call_router_test
         run: |
           mix deps.get
           mix test

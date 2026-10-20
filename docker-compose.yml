@@ -11,6 +11,11 @@ services:
     environment:
       PORT: "4000"
       LOG_LEVEL: "info"
+      # Calls are stored in the postgres service below (local-only password).
+      DATABASE_URL: "ecto://call_router:call_router@postgres:5432/call_router"
+    depends_on:
+      postgres:
+        condition: service_healthy
     # Restart automatically if the app crashes (not after manual stop).
     restart: unless-stopped
     # Give the BEAM time to shut down gracefully on SIGTERM.
@@ -23,3 +28,21 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: call_router
+      POSTGRES_PASSWORD: call_router # local dev only
+      POSTGRES_DB: call_router
+    healthcheck:
+      # -h 127.0.0.1: TCP, so the temporary init-time server (socket only)
+      # does not count as ready.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "call_router"]
+      interval: 5s
+      retries: 10
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
