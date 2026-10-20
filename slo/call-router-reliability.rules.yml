@@ -30,6 +30,26 @@ groups:
             are failing readiness, so the API is not serving calls.
           runbook_url: https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterDatabaseDown.md
 
+      # Symptom alert added after the 2026-10-20 database-outage postmortem: the
+      # availability SLO only counts requests the app answered, so when EVERY pod
+      # is NotReady (no endpoints, callers get connection refused) it stays green.
+      # This alert pages on "no pod can take traffic", whatever the cause.
+      - alert: CallRouterNoReadyPods
+        expr: |
+          kube_deployment_status_replicas_ready{namespace="voice",deployment="call-router"} == 0
+          and
+          kube_deployment_spec_replicas{namespace="voice",deployment="call-router"} > 0
+        for: 1m
+        labels:
+          severity: page
+          team: voice-platform
+        annotations:
+          summary: "call-router has no Ready pod - the API is down"
+          description: >-
+            No call-router pod has been Ready for 1 minute. The Service has no
+            endpoints, so every call fails before it reaches the app.
+          runbook_url: https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterNoReadyPods.md
+
       # HA lost: the primary has no streaming replica, so the next primary
       # failure means downtime (and data since the last archived WAL is at risk).
       - alert: CallRouterDatabaseNoReplica

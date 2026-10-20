@@ -28,6 +28,41 @@ tests:
               description: "No call-router pod has been able to query the database for 1 minute. All pods are failing readiness, so the API is not serving calls."
               runbook_url: "https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterDatabaseDown.md"
 
+  # All pods NotReady from minute 3 -> page after 1 minute. One Ready pod is
+  # enough to stay quiet; other namespaces (here a staging copy scaled to 0) are ignored.
+  - interval: 1m
+    input_series:
+      - series: 'kube_deployment_status_replicas_ready{namespace="voice",deployment="call-router"}'
+        values: '2 1 1 0 0 0 0 0 2 2'
+      - series: 'kube_deployment_spec_replicas{namespace="voice",deployment="call-router"}'
+        values: '2x9'
+      - series: 'kube_deployment_status_replicas_ready{namespace="staging",deployment="call-router"}'
+        values: '0x9'
+      - series: 'kube_deployment_spec_replicas{namespace="staging",deployment="call-router"}'
+        values: '0x9'
+    alert_rule_test:
+      - alertname: CallRouterNoReadyPods
+        eval_time: 2m
+        exp_alerts: []
+      - alertname: CallRouterNoReadyPods
+        eval_time: 3m
+        exp_alerts: []
+      - alertname: CallRouterNoReadyPods
+        eval_time: 5m
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              team: voice-platform
+              namespace: voice
+              deployment: call-router
+            exp_annotations:
+              summary: "call-router has no Ready pod - the API is down"
+              description: "No call-router pod has been Ready for 1 minute. The Service has no endpoints, so every call fails before it reaches the app."
+              runbook_url: "https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterNoReadyPods.md"
+      - alertname: CallRouterNoReadyPods
+        eval_time: 9m
+        exp_alerts: []
+
   # Replica disappears at minute 2 -> ticket after 10 minutes.
   - interval: 1m
     input_series:
