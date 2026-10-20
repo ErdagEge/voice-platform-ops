@@ -79,6 +79,7 @@ alert_state() {
 # Names of all alerts that are pending or firing (except the always-on Watchdog),
 # e.g. "CallRouterDatabaseDown(firing) ". Empty string = nothing alerting.
 firing_alerts() {
+  curl -sf -m 5 "$PROM_URL/-/ready" >/dev/null 2>&1 || { echo "n/a (no Prometheus at $PROM_URL)"; return 0; }
   curl -s -m 5 "$PROM_URL/api/v1/alerts" 2>/dev/null | python3 -c '
 import json, sys
 try: alerts = json.load(sys.stdin)["data"]["alerts"]
@@ -110,7 +111,7 @@ report() {
   cat >"$RESULTS/$1.md" <<MD
 # Chaos experiment: $1
 
-Run: $(date '+%Y-%m-%d %H:%M %Z') on kind (3 nodes), 2 app replicas, PostgreSQL primary + replica.
+Run: $(TZ=Europe/Brussels date '+%Y-%m-%d %H:%M %Z') on kind ($(kubectl get nodes --no-headers | wc -l) nodes), $(kubectl -n "$NAMESPACE" get deploy call-router -o jsonpath='{.spec.replicas}') app replicas, $(kubectl -n "$NAMESPACE" get pods -l cnpg.io/cluster=call-router-db --no-headers 2>/dev/null | wc -l) PostgreSQL instance(s).
 
 ## Hypothesis
 ${HYPOTHESIS:?}

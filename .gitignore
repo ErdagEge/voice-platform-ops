@@ -36,3 +36,6 @@ backend.hcl
 # gitlab-ci-local working dir
 .gitlab-ci-local/
 .gcp/
+
+# chaos experiment scratch files (timestamps)
+chaos/results/.*.t
