@@ -1,0 +1,98 @@
+# =============================================================================
+# Reliability alerts for call-router's data layer: database reachability,
+# replication, WAL archiving and backups. Plain Prometheus rules, same as
+# call-router-slo.rules.yml (tests in slo/tests/reliability.test.yml).
+#
+# Metric sources:
+#   call_router_db_up                     app, every 5 s (CallRouter.DbHealth)
+#   cnpg_*                                CloudNativePG instance exporter (PodMonitor)
+#   barman_cloud_cloudnative_pg_io_*      Barman Cloud plugin, via the same exporter
+#
+# Why backups need alerts: a backup nobody checks is a hope, not a backup.
+# The two failure modes are "the last attempt failed" and "nothing recent
+# succeeded" (e.g. the schedule silently stopped).
+# =============================================================================
+groups:
+  - name: call-router-reliability.alerts
+    rules:
+      # Every app pod says it cannot reach PostgreSQL. Readiness has already
+      # pulled all pods out of the Service, so callers get connection errors.
+      - alert: CallRouterDatabaseDown
+        expr: max(call_router_db_up{job="call-router"}) == 0
+        for: 1m
+        labels:
+          severity: page
+          team: voice-platform
+        annotations:
+          summary: "call-router cannot reach PostgreSQL"
+          description: >-
+            No call-router pod has been able to query the database for 1 minute. All pods
+            are failing readiness, so the API is not serving calls.
+          runbook_url: https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterDatabaseDown.md
+
+      # HA lost: the primary has no streaming replica, so the next primary
+      # failure means downtime (and data since the last archived WAL is at risk).
+      - alert: CallRouterDatabaseNoReplica
+        expr: sum(cnpg_pg_replication_streaming_replicas{pod=~"call-router-db-[0-9]+"}) < 1
+        for: 10m
+        labels:
+          severity: ticket
+          team: voice-platform
+        annotations:
+          summary: "PostgreSQL primary has no streaming replica"
+          description: >-
+            The call-router-db primary has had no streaming replica for 10 minutes. Automatic
+            failover is not possible until a replica is back.
+          runbook_url: https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterDatabaseNoReplica.md
+
+      # The newest WAL archive attempt on the primary failed (and still has
+      # not succeeded). RPO keeps growing, and unarchived WAL piles up on disk.
+      - alert: CallRouterWALArchivingFailing
+        expr: |
+          (
+            cnpg_pg_stat_archiver_last_failed_time{pod=~"call-router-db-[0-9]+"}
+              > cnpg_pg_stat_archiver_last_archived_time{pod=~"call-router-db-[0-9]+"}
+          )
+          and on (namespace, pod)
+          (cnpg_pg_replication_in_recovery{pod=~"call-router-db-[0-9]+"} == 0)
+        for: 15m
+        labels:
+          severity: page
+          team: voice-platform
+        annotations:
+          summary: "WAL archiving to the backup store is failing on {{ $labels.pod }}"
+          description: >-
+            The latest WAL file could not be archived for 15 minutes. Point-in-time recovery
+            cannot go past the last archived WAL (RPO is growing), and pg_wal will fill the disk.
+          runbook_url: https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterWALArchivingFailing.md
+
+      - alert: CallRouterBackupFailed
+        expr: |
+          max by (namespace) (barman_cloud_cloudnative_pg_io_last_failed_backup_timestamp{pod=~"call-router-db-[0-9]+"})
+            > max by (namespace) (barman_cloud_cloudnative_pg_io_last_available_backup_timestamp{pod=~"call-router-db-[0-9]+"})
+        for: 5m
+        labels:
+          severity: ticket
+          team: voice-platform
+        annotations:
+          summary: "The latest PostgreSQL base backup failed"
+          description: >-
+            The most recent call-router-db base backup failed and no newer backup succeeded.
+            Restores still work from older backups plus WAL, but the restore takes longer.
+          runbook_url: https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterBackupFailed.md
+
+      # Backups are hourly; allow one missed run plus some slack.
+      - alert: CallRouterBackupTooOld
+        expr: |
+          time() - max by (namespace) (barman_cloud_cloudnative_pg_io_last_available_backup_timestamp{pod=~"call-router-db-[0-9]+"} > 0)
+            > 2 * 3600 + 600
+        for: 10m
+        labels:
+          severity: ticket
+          team: voice-platform
+        annotations:
+          summary: "No successful PostgreSQL base backup for {{ $value | humanizeDuration }}"
+          description: >-
+            Base backups run hourly, but the newest successful one is older than 2h10m. Check
+            the ScheduledBackup and the Barman Cloud plugin.
+          runbook_url: https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterBackupFailed.md

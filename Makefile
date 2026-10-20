@@ -137,7 +137,7 @@ obs-up: obs-repos ## Install Prometheus/Alertmanager/Grafana, Tempo, Loki, Alloy
 
 obs-down: ## Remove the observability stack
 	-helm uninstall alloy loki tempo kps -n $(OBS_NS)
-	-kubectl delete prometheusrule call-router-slo -n $(NS)
+	-kubectl delete prometheusrule call-router-slo call-router-reliability -n $(NS)
 
 grafana: ## Grafana on http://localhost:3000 (admin/admin)
 	kubectl -n $(OBS_NS) port-forward svc/kps-grafana 3000:80
@@ -149,13 +149,13 @@ alertmanager: ## Alertmanager on http://localhost:9093
 	kubectl -n $(OBS_NS) port-forward svc/kps-alertmanager 9093:9093
 
 slo-check: ## promtool: validate SLO recording/alerting rules
-	promtool check rules slo/call-router-slo.rules.yml
+	promtool check rules slo/*.rules.yml
 
 slo-test: ## promtool: run SLO rule unit tests
 	promtool test rules slo/tests/*.test.yml
 
 slo-apply: ## Apply SLO rules to the cluster as a PrometheusRule
-	./scripts/slo-prometheusrule.sh | kubectl apply -f -
+	for f in slo/*.rules.yml; do ./scripts/slo-prometheusrule.sh $$f | kubectl apply -f -; done
 
 load: ## Generate traffic against kind (DURATION=120 seconds)
 	./scripts/load.sh
