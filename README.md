@@ -28,9 +28,12 @@ flowchart LR
     subgraph podInternals [call_router pod]
       bandit[Bandit HTTP server] --> router[Plug Router]
       router --> routing[Routing logic]
-      router --> store[(ETS call store)]
+      router --> store[Call store / Ecto]
       router --> metrics[Metrics registry]
     end
+
+    store --> pg[(PostgreSQL primary + replica<br/>CloudNativePG)]
+    pg -->|WAL + hourly base backups| s3[(S3 backup bucket<br/>SeaweedFS / GCS)]
 
     prom[Prometheus] -->|scrape /metrics| svc
     prom --> graf[Grafana dashboards + SLOs]
@@ -51,8 +54,8 @@ deploys the app; CI builds, tests, scans and pushes the image, then deploys.
 - [x] CI/CD (GitLab-style pipeline: test, build, scan, deploy) (`.gitlab-ci.yml`, `.github/workflows/ci.yml`, `scripts/`)
 - [x] Observability (Prometheus, Grafana, Alertmanager, Tempo traces, Loki logs) (`deploy/observability`, `app/lib/call_router/telemetry.ex`)
 - [x] SLOs (availability + latency, error budgets, burn-rate alerts) (`slo/`, `docs/runbooks/`)
-- [ ] Backup / DR (state backup, restore drills, RTO/RPO)
-- [ ] Chaos tests & runbooks (pod kills, node drain, incident playbooks)
+- [x] Backup / DR (state backup, restore drills, RTO/RPO) (`deploy/database`, `scripts/backup.sh`, `scripts/restore.sh`, `scripts/dr-drill.sh`, `docs/dr.md`)
+- [x] Chaos tests & runbooks (pod kills, node drain/failure, DB failover/outage, latency; incident playbooks, postmortem) (`chaos/`, `docs/runbooks/`, `docs/incident-response.md`, `docs/postmortems/`)
 
 ## Running the app locally
 
