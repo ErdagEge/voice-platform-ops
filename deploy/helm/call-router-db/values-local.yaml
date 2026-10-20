@@ -1,0 +1,6 @@
+# kind: HA pair + backups to the local SeaweedFS + Prometheus scraping.
+instances: 2
+backup:
+  enabled: true
+podMonitor:
+  enabled: true

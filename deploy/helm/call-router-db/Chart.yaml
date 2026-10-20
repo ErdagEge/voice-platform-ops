@@ -1,0 +1,7 @@
+apiVersion: v2
+name: call-router-db
+description: PostgreSQL for call-router via CloudNativePG, with continuous backup (WAL + base backups) to S3 and restore/PITR
+type: application
+version: 0.1.0
+# Requires: CloudNativePG operator >= 1.26 and the Barman Cloud plugin
+# (see deploy/database/ and `make db-operators-up`).

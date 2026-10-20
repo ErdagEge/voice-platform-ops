@@ -5,3 +5,8 @@ service:
   type: ClusterIP
 config:
   logLevel: debug
+# PostgreSQL on GKE = Cloud SQL (private IP, see docs/dr.md). The URL Secret
+# is synced from Secret Manager (e.g. External Secrets Operator), never in git.
+database:
+  secretName: call-router-database
+  secretKey: url

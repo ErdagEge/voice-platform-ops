@@ -1,0 +1,5 @@
+# GitHub Actions kind job: one small instance, no backups, no monitoring.
+instances: 1
+antiAffinity: preferred
+backup:
+  enabled: false

@@ -1,0 +1,104 @@
+# Local S3-compatible object store for backups: SeaweedFS in "mini" mode
+# (master + volume + filer + S3 gateway in one process, ~80 MB RAM).
+#
+# Why not MinIO? MinIO's community edition is in maintenance mode and no
+# longer publishes container images. SeaweedFS is Apache-2.0 and speaks the
+# same S3 API, so CloudNativePG/Barman and Velero work unchanged. On GKE the
+# same role is played by a GCS bucket.
+#
+# Credentials are NOT in git: scripts/backup-store-up.sh generates a random
+# key pair and creates the `seaweedfs-s3` Secret here (and copies for the
+# consumers in their namespaces).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: backup
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: seaweedfs-data
+  namespace: backup
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seaweedfs
+  namespace: backup
+  labels: { app.kubernetes.io/name: seaweedfs }
+spec:
+  replicas: 1
+  # One writer on a ReadWriteOnce volume: stop the old pod before starting a new one.
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: seaweedfs }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: seaweedfs }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: seaweedfs
+          image: chrislusf/seaweedfs:4.48
+          imagePullPolicy: IfNotPresent
+          # Call the binary directly (the image entrypoint wants root to chown).
+          command: ["/usr/bin/weed"]
+          args:
+            - mini
+            - -dir=/data
+            - -s3.config=/etc/seaweedfs/s3.json
+            - -bucket=backups
+            - -admin.ui=false
+            - -webdav=false
+          ports:
+            - { name: s3, containerPort: 8333 }
+          readinessProbe:
+            tcpSocket: { port: s3 }
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: s3 }
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 20m, memory: 96Mi }
+            limits: { memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: config, mountPath: /etc/seaweedfs, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: seaweedfs-data }
+        - name: config
+          secret:
+            secretName: seaweedfs-s3
+            items: [{ key: s3.json, path: s3.json }]
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: seaweedfs
+  namespace: backup
+spec:
+  selector: { app.kubernetes.io/name: seaweedfs }
+  ports:
+    - { name: s3, port: 8333, targetPort: s3 }

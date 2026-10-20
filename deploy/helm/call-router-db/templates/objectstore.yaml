@@ -1,0 +1,30 @@
+{{- if or .Values.backup.enabled .Values.recovery.enabled }}
+# Where backups go (and are restored from): an S3 bucket.
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: {{ include "call-router-db.objectStore" . }}
+  labels:
+    {{- include "call-router-db.labels" . | nindent 4 }}
+spec:
+  # Base backups (and the WAL they need) older than this are deleted.
+  retentionPolicy: {{ .Values.backup.retentionPolicy | quote }}
+  configuration:
+    destinationPath: {{ .Values.backup.destinationPath }}
+    endpointURL: {{ .Values.backup.endpointURL }}
+    s3Credentials:
+      accessKeyId:
+        name: {{ .Values.backup.credentialsSecret }}
+        key: ACCESS_KEY_ID
+      secretAccessKey:
+        name: {{ .Values.backup.credentialsSecret }}
+        key: ACCESS_SECRET_KEY
+    wal:
+      compression: gzip
+    data:
+      compression: gzip
+  instanceSidecarConfiguration:
+    resources:
+      requests: { cpu: 10m, memory: 64Mi }
+      limits: { memory: 256Mi }
+{{- end }}

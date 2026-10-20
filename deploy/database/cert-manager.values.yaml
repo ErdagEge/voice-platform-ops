@@ -1,0 +1,14 @@
+# cert-manager issues the TLS certificates the CloudNativePG Barman Cloud
+# plugin uses to talk to the operator (gRPC over mTLS). Small footprint.
+crds:
+  enabled: true
+resources:
+  requests: { cpu: 10m, memory: 32Mi }
+webhook:
+  resources:
+    requests: { cpu: 10m, memory: 16Mi }
+cainjector:
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+prometheus:
+  enabled: false

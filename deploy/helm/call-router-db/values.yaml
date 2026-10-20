@@ -1,0 +1,71 @@
+# --- PostgreSQL cluster ------------------------------------------------------
+# Name of the CNPG Cluster. CNPG derives everything else from it:
+#   <name>-rw   Service -> current primary (the app connects here)
+#   <name>-ro   Service -> replicas only
+#   <name>-app  Secret  -> username/password/uri for the app user
+name: call-router-db
+
+# 2 = one primary + one streaming replica on another node. If the primary
+# dies, CNPG promotes the replica (automatic failover). 1 is enough for CI.
+instances: 2
+
+# Pinned PostgreSQL image (CNPG "minimal": no barman inside; backups run in
+# the plugin's sidecar instead).
+imageName: ghcr.io/cloudnative-pg/postgresql:18.6-minimal-trixie
+
+database: app
+owner: app
+
+storage:
+  size: 1Gi
+  storageClass: "" # "" = cluster default (local-path on kind, pd-balanced on GKE)
+
+resources:
+  requests: { cpu: 50m, memory: 128Mi }
+  limits: { memory: 512Mi }
+
+postgresql:
+  parameters:
+    shared_buffers: 64MB
+    max_connections: "100"
+    # Force a WAL segment switch at least every 60 s, so even with little
+    # traffic the newest changes reach the object store within a minute.
+    # This bounds the RPO (data you can lose) to about a minute.
+    archive_timeout: 60s
+
+# Primary and replica must not share a node, otherwise one node failure
+# takes out both copies. "required" = hard rule; with 2 workers on kind
+# that means one instance per worker.
+antiAffinity: required
+
+# Scrape PostgreSQL metrics (CNPG exporter on port 9187) with Prometheus.
+podMonitor:
+  enabled: false
+
+# --- Backups -------------------------------------------------------------------
+backup:
+  enabled: false
+  # Object store (S3 API). Local: SeaweedFS from deploy/backup-store/.
+  endpointURL: http://seaweedfs.backup.svc:8333
+  destinationPath: s3://backups/cnpg
+  # Secret with ACCESS_KEY_ID / ACCESS_SECRET_KEY (scripts/backup-store-up.sh).
+  credentialsSecret: backup-s3-credentials
+  # Folder name for this cluster's WALs/backups inside destinationPath. A
+  # restored cluster must archive under a NEW name (Barman refuses to mix two
+  # timelines' histories), see recovery.* below.
+  serverName: call-router-db
+  retentionPolicy: 7d
+  # Base backups. CNPG cron has a seconds field: sec min hour dom mon dow.
+  schedule: "0 0 * * * *" # hourly, on the hour
+  # Take one backup right away when the ScheduledBackup is created.
+  immediate: true
+
+# --- Restore (disaster recovery) ----------------------------------------------
+# enabled: true -> instead of an empty database, bootstrap from the object
+# store: newest base backup + replay of archived WAL ("point in time").
+recovery:
+  enabled: false
+  # serverName of the cluster whose backups we restore from.
+  sourceServerName: call-router-db
+  # Optional PITR target, e.g. "2026-10-20 18:30:00+00". Empty = replay everything.
+  targetTime: ""

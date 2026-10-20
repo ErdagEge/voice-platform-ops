@@ -1,0 +1,19 @@
+{{- if .Values.backup.enabled }}
+# Periodic base backups (a full physical copy). Together with the archived
+# WAL they allow restoring to any second since the oldest kept backup.
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: {{ .Values.name }}-hourly
+  labels:
+    {{- include "call-router-db.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  immediate: {{ .Values.backup.immediate }}
+  backupOwnerReference: self
+  cluster:
+    name: {{ .Values.name }}
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
+{{- end }}

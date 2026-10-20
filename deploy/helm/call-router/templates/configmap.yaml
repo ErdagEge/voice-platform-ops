@@ -17,6 +17,7 @@ data:
   APP_VERSION: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
   FAULT_ERROR_RATE: {{ .Values.config.faultErrorRate | quote }}
   FAULT_LATENCY_MS: {{ .Values.config.faultLatencyMs | quote }}
+  POOL_SIZE: {{ .Values.database.poolSize | quote }}
   {{- with .Values.tracing.otlpEndpoint }}
   # Where to send traces (OTLP over HTTP). Unset = tracing export off.
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ . | quote }}

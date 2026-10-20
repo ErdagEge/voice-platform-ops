@@ -1,0 +1,17 @@
+# CloudNativePG operator: runs PostgreSQL clusters on Kubernetes (primary +
+# streaming replicas, automatic failover, backups via plugins, PITR).
+resources:
+  requests: { cpu: 50m, memory: 64Mi }
+  limits: { memory: 256Mi }
+monitoring:
+  # Lets kube-prometheus-stack scrape the operator itself.
+  podMonitorEnabled: true
+  podMonitorAdditionalLabels: {}
+  grafanaDashboard:
+    create: true
+    labels:
+      grafana_dashboard: "1"
+config:
+  data:
+    # Watch all namespaces.
+    INHERITED_LABELS: ""

@@ -1,0 +1,58 @@
+# The PostgreSQL cluster, managed by the CloudNativePG operator.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ .Values.name }}
+  labels:
+    {{- include "call-router-db.labels" . | nindent 4 }}
+spec:
+  instances: {{ .Values.instances }}
+  imageName: {{ .Values.imageName }}
+  # Wait a few seconds for a clean switchover before forcing a failover.
+  switchoverDelay: 30
+  storage:
+    size: {{ .Values.storage.size }}
+    {{- with .Values.storage.storageClass }}
+    storageClass: {{ . }}
+    {{- end }}
+  resources:
+    {{- toYaml .Values.resources | nindent 4 }}
+  postgresql:
+    parameters:
+      {{- toYaml .Values.postgresql.parameters | nindent 6 }}
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: {{ .Values.antiAffinity }}
+  {{- if .Values.backup.enabled }}
+  # Continuous archiving: every finished WAL file is shipped to the object
+  # store by the Barman Cloud plugin sidecar.
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: {{ include "call-router-db.objectStore" . }}
+        serverName: {{ .Values.backup.serverName }}
+  {{- end }}
+  bootstrap:
+  {{- if .Values.recovery.enabled }}
+    recovery:
+      source: origin
+      database: {{ .Values.database }}
+      owner: {{ .Values.owner }}
+      {{- with .Values.recovery.targetTime }}
+      recoveryTarget:
+        targetTime: {{ . | quote }}
+      {{- end }}
+  externalClusters:
+    - name: origin
+      plugin:
+        name: barman-cloud.cloudnative-pg.io
+        parameters:
+          barmanObjectName: {{ include "call-router-db.objectStore" . }}
+          serverName: {{ .Values.recovery.sourceServerName }}
+  {{- else }}
+    initdb:
+      database: {{ .Values.database }}
+      owner: {{ .Values.owner }}
+  {{- end }}

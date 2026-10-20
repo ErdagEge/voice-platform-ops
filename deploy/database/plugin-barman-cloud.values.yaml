@@ -1,0 +1,5 @@
+# Barman Cloud plugin: streams WAL files and base backups of every CNPG
+# cluster that enables it to an S3-compatible object store (here the local
+# SeaweedFS in namespace "backup"). Needs cert-manager.
+resources:
+  requests: { cpu: 10m, memory: 32Mi }

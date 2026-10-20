@@ -53,15 +53,25 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
-      # Prefer spreading replicas over different nodes, so one node failing
-      # doesn't take down every replica.
+      # Spread replicas over nodes. With whenUnsatisfiable=DoNotSchedule
+      # this is a HARD rule: two replicas never share a node while another
+      # node is free, so losing one node never takes out every replica.
+      # (Step 3 used a soft rule, and both pods ended up on one worker.)
+      #  - nodeTaintsPolicy: Honor ignores cordoned/tainted nodes, so a
+      #    `kubectl drain` can still move the pod to a remaining node.
+      #  - matchLabelKeys: pod-template-hash spreads each rollout revision
+      #    separately, so rolling updates are not blocked by old pods.
       topologySpreadConstraints:
-        - maxSkew: 1
-          topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: ScheduleAnyway
+        {{- range .Values.topologySpread }}
+        - maxSkew: {{ .maxSkew | default 1 }}
+          topologyKey: {{ .topologyKey }}
+          whenUnsatisfiable: {{ .whenUnsatisfiable }}
+          nodeTaintsPolicy: Honor
+          matchLabelKeys: [pod-template-hash]
           labelSelector:
             matchLabels:
-              {{- include "call-router.selectorLabels" . | nindent 14 }}
+              {{- include "call-router.selectorLabels" $ | nindent 14 }}
+        {{- end }}
       containers:
         - name: call-router
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
@@ -74,6 +84,16 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "call-router.fullname" . }}
+          {{- if .Values.database.enabled }}
+          env:
+            # PostgreSQL connection string from a Secret (CloudNativePG creates
+            # `<cluster>-app` with a ready-made `uri`). Never in the ConfigMap.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.secretName }}
+                  key: {{ .Values.database.secretKey }}
+          {{- end }}
           # Liveness: if this fails repeatedly, kubelet RESTARTS the container.
           livenessProbe:
             httpGet:

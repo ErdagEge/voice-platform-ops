@@ -91,3 +91,20 @@ podAnnotations: {}
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# Pod spreading (see deployment.yaml). Hard across nodes, soft across zones
+# (GKE regional clusters have 3 zones; kind has none, so it is a no-op there).
+topologySpread:
+  - topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: DoNotSchedule
+  - topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+
+# PostgreSQL. enabled=false -> no DATABASE_URL -> calls stay in pod memory
+# (only useful for a quick demo). The Secret must contain a full URL
+# (postgres://user:pass@host:5432/db) under `secretKey`.
+database:
+  enabled: true
+  secretName: call-router-db-app # created by CloudNativePG (deploy/helm/call-router-db)
+  secretKey: uri
+  poolSize: 5

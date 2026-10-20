@@ -1,0 +1,17 @@
+{{- if and .Values.podMonitor.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PodMonitor") }}
+# Prometheus scrapes each PostgreSQL instance's exporter (port "metrics",
+# 9187): replication lag, WAL archiving status, backup timestamps, ...
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ .Values.name }}
+  labels:
+    {{- include "call-router-db.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      cnpg.io/cluster: {{ .Values.name }}
+  podMetricsEndpoints:
+    - port: metrics
+      interval: 30s
+{{- end }}

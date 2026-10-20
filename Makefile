@@ -159,3 +159,39 @@ slo-apply: ## Apply SLO rules to the cluster as a PrometheusRule
 
 load: ## Generate traffic against kind (DURATION=120 seconds)
 	./scripts/load.sh
+
+# ---- Data: PostgreSQL (CloudNativePG) + backups ---------------------------
+DB_DIR          := deploy/database
+DB_CHART        := deploy/helm/call-router-db
+CERT_MANAGER_VERSION := v1.21.2
+CNPG_VERSION    := 0.29.1
+BARMAN_PLUGIN_VERSION := 0.8.1
+
+.PHONY: db-repos db-operators-up backup-store-up db-up db-down db-psql
+
+db-repos:
+	helm repo add jetstack https://charts.jetstack.io --force-update
+	helm repo add cnpg https://cloudnative-pg.github.io/charts --force-update
+	helm repo update jetstack cnpg
+
+db-operators-up: db-repos ## cert-manager + CloudNativePG operator + Barman Cloud plugin
+	helm upgrade --install cert-manager jetstack/cert-manager --version $(CERT_MANAGER_VERSION) \
+	  -n cert-manager --create-namespace -f $(DB_DIR)/cert-manager.values.yaml --wait --timeout 6m
+	helm upgrade --install cnpg cnpg/cloudnative-pg --version $(CNPG_VERSION) \
+	  -n cnpg-system --create-namespace -f $(DB_DIR)/cloudnative-pg.values.yaml --wait --timeout 6m
+	helm upgrade --install barman-cloud cnpg/plugin-barman-cloud --version $(BARMAN_PLUGIN_VERSION) \
+	  -n cnpg-system -f $(DB_DIR)/plugin-barman-cloud.values.yaml --wait --timeout 6m
+
+backup-store-up: ## Local S3 (SeaweedFS) for backups + credentials in namespace voice
+	./scripts/backup-store-up.sh $(NS)
+
+db-up: ## PostgreSQL cluster (primary + replica) with continuous backups (run before `make deploy`)
+	helm upgrade --install call-router-db $(DB_CHART) -n $(NS) --create-namespace \
+	  -f $(DB_CHART)/values-local.yaml
+	kubectl -n $(NS) wait --for=condition=Ready cluster/call-router-db --timeout=6m
+
+db-down: ## Delete the PostgreSQL cluster (data is lost; backups in S3 stay)
+	-helm uninstall call-router-db -n $(NS)
+
+db-psql: ## psql shell on the current primary
+	kubectl -n $(NS) exec -it $$(kubectl -n $(NS) get pod -l cnpg.io/cluster=call-router-db,cnpg.io/instanceRole=primary -o name) -c postgres -- psql app
