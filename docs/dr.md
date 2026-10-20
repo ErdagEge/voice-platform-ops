@@ -22,7 +22,7 @@ retention lock (see *GKE / Cloud SQL* below).
 |---|---|---|---|
 | **RPO** (max data loss) | **≤ 60 s** | **1 s** (graceful), **17 s** (crash: PostgreSQL SIGKILLed with no clean shutdown) | `archive_timeout: 60s` closes a WAL segment at least every minute, so at most ~1 min of commits is only on the lost disk |
 | **RTO**: DB lost, cluster healthy | **≤ 15 min** | **99 s** (crash drill: 32 s namespace deletion + 57 s new 2-instance cluster restored from base backup + WAL + 9 s app deploy & smoke test) | Team target incl. human decision time; the automation itself is ~1-2 min |
-| **RTO**: primary instance/node lost | **≤ 1 min**, no data loss | failover in **see [chaos 04](../chaos/results/04-db-failover.md)** | Replica promotion by CNPG, no restore needed |
+| **RTO**: primary instance/node lost | **≤ 1 min**, no data loss | **22 s** to a new primary, 21 s of errors, 0 calls lost ([chaos 04](../chaos/results/04-db-failover.md)); a *planned* drain of the primary node took 72 s ([chaos 02](../chaos/results/02-node-drain.md)) | Replica promotion by CNPG, no restore needed |
 | **RTO**: whole Kubernetes cluster lost | ≤ 1 h | not drilled on kind (would be `make kind-up obs-up db-operators-up backup-store-up` + restore against an external bucket) | Terraform recreates GKE in ~15 min; then the same restore |
 | Backup verification | restore drill **monthly** + after every backup-config change | `scripts/dr-drill.sh` | A backup counts only after it has been restored |
 
