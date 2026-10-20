@@ -34,6 +34,7 @@ env:
   KUBECONFORM_VERSION: "v0.8.0"
   TRIVY_VERSION: "v0.76.0"
   KIND_VERSION: "v0.33.0"
+  CNPG_CHART_VERSION: "0.29.1" # CloudNativePG operator 1.30.1
   PROMETHEUS_VERSION: "3.15.0" # only its `promtool` binary is used
   # prometheus-operator version bundled with kube-prometheus-stack 92.10.1;
   # we install just its ServiceMonitor CRD in the kind job (not the stack).
@@ -104,6 +105,13 @@ jobs:
           curl -fsSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
             | sudo tar xz -C /usr/local/bin kubeconform
           helm lint deploy/helm/call-router -f deploy/helm/call-router/values-local.yaml
+          helm lint deploy/helm/call-router-db -f deploy/helm/call-router-db/values-local.yaml
+          for v in values-local.yaml values-ci.yaml; do
+            echo "== call-router-db $v"
+            helm template call-router-db deploy/helm/call-router-db -f "deploy/helm/call-router-db/$v" \
+              --api-versions monitoring.coreos.com/v1/PodMonitor \
+              | kubeconform -strict -summary -schema-location default -schema-location "$CRD_SCHEMAS" -
+          done
           for v in values-local.yaml values-gke-dev.yaml values-gke-prod.yaml; do
             echo "== $v"
             helm template call-router deploy/helm/call-router -f "deploy/helm/call-router/$v" \
@@ -142,7 +150,7 @@ jobs:
     # transactions (Ecto SQL sandbox), so the data never matters.
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:18-alpine
         env:
           POSTGRES_PASSWORD: postgres
         ports: ["5432:5432"]
@@ -258,6 +266,18 @@ jobs:
         run: |
           kubectl apply --server-side -f "https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/${PROM_OPERATOR_VERSION}/example/prometheus-operator-crd/monitoring.coreos.com_servicemonitors.yaml"
           kubectl wait --for condition=established --timeout=60s crd/servicemonitors.monitoring.coreos.com
+      # The app stores calls in PostgreSQL: install the CloudNativePG
+      # operator and a single small instance (no backups in CI).
+      - name: PostgreSQL (CloudNativePG, 1 instance)
+        run: |
+          helm repo add cnpg https://cloudnative-pg.github.io/charts
+          helm upgrade --install cnpg cnpg/cloudnative-pg --version "$CNPG_CHART_VERSION" \
+            -n cnpg-system --create-namespace -f deploy/database/cloudnative-pg.values.yaml \
+            --set monitoring.podMonitorEnabled=false --set monitoring.grafanaDashboard.create=false \
+            --wait --timeout 5m
+          helm upgrade --install call-router-db deploy/helm/call-router-db -n "$NAMESPACE" --create-namespace \
+            -f deploy/helm/call-router-db/values-ci.yaml --wait --timeout 5m
+          kubectl -n "$NAMESPACE" wait --for=condition=Ready cluster/call-router-db --timeout=5m
       - name: Deploy (helm --atomic) + smoke test
         env:
           IMAGE_TAG: ${{ github.sha }}
@@ -279,6 +299,7 @@ jobs:
           kubectl get nodes -o wide || true
           kubectl -n "$NAMESPACE" get all,events -o wide || true
           kubectl -n "$NAMESPACE" describe pods || true
+          kubectl -n "$NAMESPACE" get cluster -o yaml || true
           kubectl -n "$NAMESPACE" logs -l app.kubernetes.io/instance="$RELEASE" --tail=100 || true
           helm -n "$NAMESPACE" history "$RELEASE" || true
 

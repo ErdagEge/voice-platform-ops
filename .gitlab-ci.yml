@@ -123,9 +123,16 @@ helm:lint:
   script:
     - wget -qO- "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" | tar xz -C /usr/local/bin kubeconform
     - helm lint deploy/helm/call-router -f deploy/helm/call-router/values-local.yaml
+    - helm lint deploy/helm/call-router-db -f deploy/helm/call-router-db/values-local.yaml
     # Render every values file and validate against the Kubernetes schemas.
     - |
       set -eo pipefail  # fail if `helm template` fails, not just kubeconform
+      for v in values-local.yaml values-ci.yaml; do
+        echo "== call-router-db $v"
+        helm template call-router-db deploy/helm/call-router-db -f deploy/helm/call-router-db/$v \
+          --api-versions monitoring.coreos.com/v1/PodMonitor \
+          | kubeconform -strict -summary -schema-location default -schema-location "$CRD_SCHEMAS" -
+      done
       for v in values-local.yaml values-gke-dev.yaml values-gke-prod.yaml; do
         echo "== $v"
         helm template call-router deploy/helm/call-router -f deploy/helm/call-router/$v \
@@ -159,7 +166,7 @@ elixir:test:
   needs: [] # start immediately, don't wait for lint
   # PostgreSQL as a side container, reachable as host "postgres".
   services:
-    - name: postgres:17-alpine
+    - name: postgres:18-alpine
       alias: postgres
   variables:
     MIX_ENV: test

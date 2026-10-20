@@ -30,7 +30,7 @@ services:
       - no-new-privileges:true
 
   postgres:
-    image: postgres:17-alpine
+    image: postgres:18-alpine
     environment:
       POSTGRES_USER: call_router
       POSTGRES_PASSWORD: call_router # local dev only
@@ -42,7 +42,8 @@ services:
       interval: 5s
       retries: 10
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # Postgres 18 images keep data under /var/lib/postgresql/<major>/.
+      - pgdata:/var/lib/postgresql
 
 volumes:
   pgdata:

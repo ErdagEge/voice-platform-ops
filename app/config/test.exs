@@ -5,7 +5,7 @@ config :logger, level: :warning
 config :call_router, start_server: false
 
 # Tests run against a real PostgreSQL (CI: a `postgres` service container;
-# locally: `docker run -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:17`).
+# locally: `docker run -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:18-alpine`).
 # The SQL Sandbox wraps every test in a transaction that is rolled back.
 config :call_router, CallRouter.Repo,
   url: System.get_env("DATABASE_URL", "ecto://postgres:postgres@localhost:5432/call_router_test"),
