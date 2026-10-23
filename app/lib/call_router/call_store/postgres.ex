@@ -38,11 +38,17 @@ defmodule CallRouter.CallStore.Postgres do
   """
   @impl true
   def ready? do
-    match?({:ok, _}, SQL.query(Repo, "SELECT 1", [], timeout: 1_000))
+    # Migrations retry in the background after a DNS blip. Stay unready
+    # until they have been applied, even if SELECT 1 would already succeed.
+    CallRouter.Migrator.ready?() and database_responds?()
   rescue
     _ -> false
   catch
     :exit, _ -> false
+  end
+
+  defp database_responds? do
+    match?({:ok, _}, SQL.query(Repo, "SELECT 1", [], timeout: 1_000))
   end
 
   defp unavailable(e) do

@@ -14,7 +14,11 @@
 # the long window proves it's significant, the short window proves it's
 # still happening (so alerts resolve quickly once fixed).
 #
-#   severity=page   : 14.4x over 1h AND 5m   (2% of budget in 1 hour)
+#   severity=page   : 14.4x over 1h AND 5m   (availability; 2% of budget in 1 hour)
+#   severity=page   : 14.4x over 15m AND 5m  (latency; chaos 06: a 1h rate() was
+#                     diluted by earlier fast traffic, so a ~20 min slow period
+#                     never paged. 15m is long enough to ignore a scrape blip
+#                     and short enough that the previous hour is not in it.)
 #   severity=page   :    6x over 6h AND 30m  (5% of budget in 6 hours)
 #   severity=ticket :    1x over 3d AND 6h   (10% of budget in 3 days)
 #
@@ -103,6 +107,20 @@ groups:
             sum(rate(http_request_duration_seconds_bucket{job="call-router",route=~"/api/.*",le="0.5"}[5m]))
             /
             sum(rate(http_request_duration_seconds_count{job="call-router",route=~"/api/.*"}[5m]))
+          )
+        labels:
+          slo: call-router-latency
+      # Long window for the latency fast-burn page. 15m, not 1h: chaos 06
+      # showed rate()[1h] staying under 14.4% while the 5m ratio was ~50%,
+      # because earlier fast requests (and a slower request rate once calls
+      # were delayed) diluted the hour. A bad period of about 20 minutes
+      # fills this window.
+      - record: slo:sli_error:ratio_rate15m
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{job="call-router",route=~"/api/.*",le="0.5"}[15m]))
+            /
+            sum(rate(http_request_duration_seconds_count{job="call-router",route=~"/api/.*"}[15m]))
           )
         labels:
           slo: call-router-latency
@@ -242,7 +260,7 @@ groups:
           runbook_url: https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterAvailabilityBudgetBurnSlow.md
       - alert: CallRouterLatencyBudgetBurnFast
         expr: |
-          slo:sli_error:ratio_rate1h{slo="call-router-latency"} > (14.4 * 0.01)
+          slo:sli_error:ratio_rate15m{slo="call-router-latency"} > (14.4 * 0.01)
           and
           slo:sli_error:ratio_rate5m{slo="call-router-latency"} > (14.4 * 0.01)
         for: 2m
@@ -253,9 +271,10 @@ groups:
         annotations:
           summary: "call-router latency error budget burning 14.4x too fast"
           description: >-
-            The latency SLI error ratio is {{ $value | humanizePercentage }} over the last 1h
+            The latency SLI error ratio is {{ $value | humanizePercentage }} over the last 15m
             (threshold 14.4%, i.e. 14.4x the 1% budget of the 99% < 500 ms latency SLO).
-            At this pace 2% of the 30-day error budget is spent in 1 hour.
+            The long window is 15m so a sustained slow period pages in about 20 minutes;
+            a 1h window was diluted by earlier fast traffic and never paged (chaos 06).
           runbook_url: https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterLatencyBudgetBurnFast.md
       - alert: CallRouterLatencyBudgetBurnMedium
         expr: |

@@ -18,6 +18,10 @@ data:
   FAULT_ERROR_RATE: {{ .Values.config.faultErrorRate | quote }}
   FAULT_LATENCY_MS: {{ .Values.config.faultLatencyMs | quote }}
   POOL_SIZE: {{ .Values.database.poolSize | quote }}
+  {{- if and .Values.database.enabled .Values.database.clusterDomain }}
+  # Turns "<service>.<namespace>" in DATABASE_URL into a cluster FQDN.
+  DATABASE_CLUSTER_DOMAIN: {{ .Values.database.clusterDomain | quote }}
+  {{- end }}
   {{- with .Values.tracing.otlpEndpoint }}
   # Where to send traces (OTLP over HTTP). Unset = tracing export off.
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ . | quote }}

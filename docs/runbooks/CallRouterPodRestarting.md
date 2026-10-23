@@ -32,14 +32,14 @@ container_memory_working_set_bytes{container="call-router"}
 ## Diagnosis
 1. **Exit reason** (`describe pod` → *Last State*):
    - `OOMKilled` (exit 137): memory limit hit. A known trap with the BEAM is that it sizes tables from the open-file limit (`ERL_MAX_PORTS`; this crash-looped the pods on kind in step 3, see the comment in `templates/configmap.yaml`). Compare `container_memory_working_set_bytes` with the limit.
-   - `Error` (exit 1): the app failed at boot. Read `--previous` logs; `Ecto.Migrator` / `connection refused` errors mean the database is unreachable at startup.
+   - `Error` (exit 1): the app failed at boot. Read `--previous` logs. A database that is unreachable at startup is retried by `CallRouter.Migrator` (the pod stays up and NotReady); an exit here is a different crash. `Ecto.Migrator` lines in `--previous` logs mean an image from before that retry.
    - Liveness probe failures (Events: `Liveness probe failed`): the BEAM is overloaded or stuck; check `vm_run_queue_total`.
 2. **Since when?** Correlate with `helm history` (new image or config?) and node events.
 
 ## Mitigation
 - Bad release: `helm -n voice rollback call-router`.
 - OOM: raise `resources.limits.memory` or fix the leak; make sure `ERL_MAX_PORTS` is set (ConfigMap).
-- DB at boot: fix the database first; pods recover on their own (backoff up to 5 min, or `kubectl delete pod` to retry immediately).
+- DB or DNS at boot: fix connectivity (`CallRouterDatabaseDown`, or kube-proxy on a node that just restarted). Current images retry migrations and become Ready without a delete. An old image CrashLoopBackOffs (backoff up to 5 min); `kubectl delete pod` retries immediately.
 
 ## Escalation
 - No page: create a ticket in the voice-platform queue, fix within 2 working days.

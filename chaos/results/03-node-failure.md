@@ -34,6 +34,39 @@ When the worker running one app replica AND the PostgreSQL primary dies, CloudNa
   the `000` connection timeouts), and the new DB primary took **83 s** (node detection plus
   the primary lease expiring), during which writes failed (`503`).
 - New finding: after an unplanned node restart, an app pod can stay broken (crash loop
-  on DNS) until someone intervenes. Follow-ups: make the app keep retrying the DB at boot
-  instead of exiting, and the "node restarted" step in the
-  [CallRouterNoReadyPods runbook](../../docs/runbooks/CallRouterNoReadyPods.md).
+  on DNS) until someone intervenes.
+
+## Fix (find → fix → prove)
+
+**Cause.** `Ecto.Migrator`, started as a supervision child, runs migrations inside
+`init/1` and then returns `:ignore`. The database host in the CloudNativePG `uri`
+secret is `call-router-db-rw.voice` (`<service>.<namespace>`). That name only
+resolves via the DNS search list. While kube-proxy on the restarted node is still
+coming up, the lookup returns `:nxdomain` (`non-existing domain`). The migrator
+init crashes, the BEAM exits, and kubelet CrashLoopBackOff grows to minutes, so
+the pod is still waiting to restart after DNS has recovered. Deleting it was the
+only way back. The connection pool itself would have retried; the one-shot
+migration is what killed the process.
+
+**Change.**
+- `CallRouter.Migrator` retries with exponential backoff (1 s … 30 s) and does
+  not exit. `/healthz` stays up (no kubelet restart) and `/readyz` stays down
+  until migrations have been applied, then the pod becomes Ready on its own.
+- The chart appends `svc.cluster.local` to a one-dot CNPG host and sets
+  `ndots: 2`, so the first lookup is `call-router-db-rw.voice.svc.cluster.local`
+  instead of a search-list name that does not exist. Cloud SQL values set
+  `database.clusterDomain: ""` and are not rewritten.
+
+The 162 s error window is kubelet NotReady detection plus the CNPG primary lease.
+This change does not claim to shrink it. The pass bar for a re-run is: no lost
+calls, and every app pod Ready without a manual delete.
+
+**Re-verify** (kind cluster up, app and database deployed):
+
+```bash
+bash chaos/03-node-failure.sh
+```
+
+Optional: `RECOVER_TIMEOUT=180` (default). The report must say app pods Ready
+**yes**. `CrashLoopBackOff` or a manual `kubectl delete pod` means the fix
+missed.

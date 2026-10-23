@@ -39,6 +39,11 @@ end
 # On kind/GKE the URL comes from the Secret CloudNativePG creates.
 if config_env() != :test do
   if url = System.get_env("DATABASE_URL") do
+    # Qualify "<service>.<namespace>" (the CNPG uri secret) to a cluster
+    # FQDN when the chart sets DATABASE_CLUSTER_DOMAIN. The pool already
+    # reconnects; boot migrations retry in CallRouter.Migrator.
+    url = CallRouter.DatabaseUrl.qualify(url, System.get_env("DATABASE_CLUSTER_DOMAIN"))
+
     config :call_router, CallRouter.Repo,
       url: url,
       pool_size: String.to_integer(System.get_env("POOL_SIZE", "5")),

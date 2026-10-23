@@ -28,15 +28,44 @@ The 5-minute window crossed it within minutes, but the 1-hour window was diluted
 traffic (calculation, not measured): with half the requests slow, the 1-hour ratio
 reaches 14.4 % after about 0.144 / 0.5 x 60 = **~17 minutes**, plus `for: 2m` - so the
 "page within ~10 minutes" hypothesis was too optimistic even without the dilution.
+With the slower request rate during the injection, 25 minutes on that same cluster
+would still have left the 1-hour ratio under 14.4 %.
 
 ## Verdict
 **FAIL** - `CallRouterLatencyBudgetBurnFast` did not fire within 8 minutes.
 - Held: injected latency caused **0 errors** (6152/6152 OK), so error-based alerts and
   the availability SLO correctly stayed quiet; the 5-minute latency SLI showed the
   problem immediately (50 %) and the slow-burn ticket alert went pending.
-- Did not hold: no page within the window. This is the multi-window design working as
-  intended (the 1-hour window makes the alert significant) but it means a "half of all
-  requests are slow" incident pages after ~20 minutes, not 10.
-- Follow-ups: re-run with `MINUTES=25` on a quiet cluster to measure the real
-  time-to-page; consider a per-route latency SLO for `POST /api/calls` (the call
-  set-up path users feel), so a slow POST is not averaged with fast GETs.
+- Did not hold: no page within the window.
+
+## Fix (find → fix → prove)
+
+**Cause.** `CallRouterLatencyBudgetBurnFast` was `rate()[1h] > 14.4% AND rate()[5m] > 14.4%`
+for 2 minutes. The 5-minute ratio was ~50 % within minutes. The 1-hour ratio was
+1.45 % because earlier fast requests dominated the increase, and slow POSTs also
+reduced how many bad samples the load generator could add. The multi-window idea
+(long window = significant, short window = still happening) was right; 1 hour is
+too long a "long" window for this SLO when traffic before the incident was healthy
+and faster.
+
+**Change.** The latency fast-burn long window is **15 minutes** (still AND the
+5-minute window, still 14.4× the 1 % budget, still `for: 2m`). A 15-minute window
+does not contain the previous hour, so a bad period of about 20 minutes pages.
+Availability burn rates (1h / 6h / 3d) are unchanged. The recording rule is
+`slo:sli_error:ratio_rate15m{slo="call-router-latency"}`. Promtool test 3 in
+`slo/tests/latency.test.yml` replays the diluted shape: an hour of fast traffic,
+then 50 % slow at a lower rate. The 1-hour ratio stays under 14.4 %, the alert
+does not fire at the original 8-minute mark, and it does fire once the 15-minute
+window is inside the bad period.
+
+**Re-verify** (kind up, Prometheus port-forwarded to `localhost:9090`):
+
+```bash
+bash chaos/06-latency.sh
+```
+
+That defaults to `MINUTES=25`. `CallRouterLatencyBudgetBurnFast` should go
+`firing` inside the run (expect on the order of 15–20 minutes, plus `for: 2m`).
+The report prints the 5m, 15m and 1h bad ratios; 15m should be above ~0.14 while
+1h may still look fine. `MINUTES=8 bash chaos/06-latency.sh` is the original
+failing duration and is not long enough for this page.

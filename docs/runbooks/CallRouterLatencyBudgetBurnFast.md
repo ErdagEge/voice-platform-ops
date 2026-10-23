@@ -8,7 +8,9 @@
 | Escalation & roles | [docs/incident-response.md](../incident-response.md) |
 
 ## What it means
-More than the allowed 1 % of API requests take longer than **500 ms**: the latency error budget burns **14.4x** too fast over 1h and 5m (for 2m).
+More than the allowed 1 % of API requests take longer than **500 ms**: the latency error budget burns **14.4x** too fast over **15m and 5m** (for 2m).
+
+The long window used to be 1h. [Chaos experiment 06](../../chaos/results/06-latency.md) injected 600 ms on `POST /api/calls` and the 5-minute bad ratio went to ~50 %, but the 1-hour ratio stayed at 1.45 % because earlier fast traffic diluted `rate()[1h]`, so this page never fired. 15m is long enough that one scrape does not page, and short enough that a bad period of about 20 minutes does. The 5-minute window is still required, so the alert clears once recent latency is fine again. Availability fast-burn is still 1h and 5m.
 
 ## Impact
 Calls still succeed but slowly; in telephony a slow routing decision means dead air for the caller or a timeout at the SIP/telephony side, which then fails the call anyway.

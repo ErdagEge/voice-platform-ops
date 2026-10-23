@@ -47,7 +47,7 @@ Find *why* readiness fails - the alert only says *that* it fails:
 ## Mitigation
 - Bad release: `helm -n voice rollback call-router` (or `scripts/rollback-demo.sh` shows how).
 - Database: see [CallRouterDatabaseDown](CallRouterDatabaseDown.md).
-- Node just restarted and its pod crash-loops with `nxdomain` (seen in [chaos experiment 03](../../chaos/results/03-node-failure.md)): check `kube-proxy` on that node (`kubectl -n kube-system get pods -o wide | grep <node>`), delete it if unhealthy (the DaemonSet recreates it), then delete the stuck app pod.
+- Node just restarted and logs show `nxdomain` for `call-router-db-rw` (seen in [chaos experiment 03](../../chaos/results/03-node-failure.md)): the app retries migrations in-process and should become Ready on its own once kube-proxy/CoreDNS answers. If it is still not Ready after a few minutes, check `kube-proxy` on that node (`kubectl -n kube-system get pods -o wide | grep <node>`) and delete that pod if it is unhealthy (the DaemonSet recreates it). Deleting the app pod is only needed if it is still `CrashLoopBackOff` from an image built before the retry.
 - Capacity / nodes: uncordon or add nodes; temporarily relax the hard topology spread (`topologySpread.hostname.whenUnsatisfiable=ScheduleAnyway`) if one node is left.
 
 ## Escalation
