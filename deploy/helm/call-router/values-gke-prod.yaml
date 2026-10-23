@@ -24,3 +24,5 @@ autoscaling:
 database:
   secretName: call-router-database
   secretKey: url
+  # Private IP / Cloud SQL DNS name. Do not rewrite it to *.svc.cluster.local.
+  clusterDomain: ""

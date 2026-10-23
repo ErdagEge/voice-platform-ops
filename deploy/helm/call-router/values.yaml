@@ -108,3 +108,7 @@ database:
   secretName: call-router-db-app # created by CloudNativePG (deploy/helm/call-router-db)
   secretKey: uri
   poolSize: 5
+  # CNPG's uri host is "<service>.<namespace>". Append this domain so the
+  # process resolves the Service on the first DNS query, and lower ndots
+  # (see deployment.yaml). Empty string = leave the URL alone (Cloud SQL).
+  clusterDomain: svc.cluster.local

@@ -41,5 +41,43 @@ tests:
               team: voice-platform
             exp_annotations:
               summary: "call-router latency error budget burning 14.4x too fast"
-              description: "The latency SLI error ratio is 20% over the last 1h (threshold 14.4%, i.e. 14.4x the 1% budget of the 99% < 500 ms latency SLO). At this pace 2% of the 30-day error budget is spent in 1 hour."
+              description: "The latency SLI error ratio is 20% over the last 15m (threshold 14.4%, i.e. 14.4x the 1% budget of the 99% < 500 ms latency SLO). The long window is 15m so a sustained slow period pages in about 20 minutes; a 1h window was diluted by earlier fast traffic and never paged (chaos 06)."
+              runbook_url: "https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterLatencyBudgetBurnFast.md"
+
+  # 3. Chaos 06 shape: an hour of fast traffic, then a slower request rate
+  #    that is 50% over 500 ms (only POST is slow). The 1h ratio stays
+  #    diluted under 14.4%; the 15m window is entirely inside the bad
+  #    period, so the page fires. It must not fire 8 minutes in (the
+  #    original experiment length).
+  - interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_bucket{job="call-router",route="/api/calls",method="POST",le="0.5"}'
+        values: '0+1000x60 60100+100x24'
+      - series: 'http_request_duration_seconds_count{job="call-router",route="/api/calls",method="POST"}'
+        values: '0+1000x60 60200+200x24'
+    promql_expr_test:
+      - expr: round(slo:sli_error:ratio_rate15m{slo="call-router-latency"}, 0.001)
+        eval_time: 85m
+        exp_samples:
+          - labels: '{slo="call-router-latency"}'
+            value: 0.5
+      - expr: round(slo:sli_error:ratio_rate1h{slo="call-router-latency"}, 0.001) < bool 0.144
+        eval_time: 85m
+        exp_samples:
+          - labels: '{slo="call-router-latency"}'
+            value: 1
+    alert_rule_test:
+      - alertname: CallRouterLatencyBudgetBurnFast
+        eval_time: 70m
+        exp_alerts: []
+      - alertname: CallRouterLatencyBudgetBurnFast
+        eval_time: 85m
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              slo: call-router-latency
+              team: voice-platform
+            exp_annotations:
+              summary: "call-router latency error budget burning 14.4x too fast"
+              description: "The latency SLI error ratio is 50% over the last 15m (threshold 14.4%, i.e. 14.4x the 1% budget of the 99% < 500 ms latency SLO). The long window is 15m so a sustained slow period pages in about 20 minutes; a 1h window was diluted by earlier fast traffic and never paged (chaos 06)."
               runbook_url: "https://github.com/ErdagEge/voice-platform-ops/blob/main/docs/runbooks/CallRouterLatencyBudgetBurnFast.md"

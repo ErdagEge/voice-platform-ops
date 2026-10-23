@@ -407,7 +407,8 @@ make obs-down            # remove the stack
 
 | Alert | Burn rate | Windows (long AND short) | `for` | Severity | Budget used when it fires |
 |---|---|---|---|---|---|
-| `…BudgetBurnFast` | 14.4× | 1h and 5m | 2m | page | 2 % in 1 hour |
+| `CallRouterAvailabilityBudgetBurnFast` | 14.4× | 1h and 5m | 2m | page | 2 % in 1 hour |
+| `CallRouterLatencyBudgetBurnFast` | 14.4× | 15m and 5m | 2m | page | a sustained slow period of ~20 min (the 1h window hid chaos 06) |
 | `…BudgetBurnMedium` | 6× | 6h and 30m | 15m | page | 5 % in 6 hours |
 | `…BudgetBurnSlow` | 1× | 3d and 6h | 1h | ticket | 10 % in 3 days |
 
@@ -473,11 +474,12 @@ full stack.
 - **Burn rate.** The burn rate is how fast you spend the budget. 1× uses it up
   in exactly 30 days, and 14.4× uses it up in about 2 days. Alerting on burn
   rate means paging for "we will miss the SLO soon" and not for every blip.
-- **Multi-window alerts.** Each alert needs a long window (e.g. 1h, so it is
+- **Multi-window alerts.** Each alert needs a long window (so it is
   significant) *and* a short one (e.g. 5m, so it is still happening) to be
   over the threshold. This filters out short spikes and lets the alert clear
   quickly once the problem is fixed. Fast burns page a human; slow burns open
-  a ticket.
+  a ticket. Availability's fast page uses 1h; latency's uses 15m, because a
+  1h `rate()` was diluted by earlier fast traffic (chaos experiment 06).
 - **Rules as code.** The SLO rules are a plain file checked by
   `promtool check rules` and unit-tested with `promtool test rules` in both
   pipelines, the same way the Elixir code is tested.
@@ -532,13 +534,56 @@ in a test instead of in production.
 |---|---|---|---|
 | 01 | Kill an app pod: graceful / force / SIGKILL | 0 / 0 / 126 errors (0.52 %), Ready again in 6-7 s, 0 calls lost | [PASS](chaos/results/01-pod-kill-graceful.md) ([force](chaos/results/01-pod-kill-force.md), [sigkill](chaos/results/01-pod-kill-sigkill.md)) |
 | 02 | Drain a node (planned maintenance) | Replica's node: 0 errors. Primary's node: 72 s write outage (lease handover + promotion), 0 calls lost | [PASS / FAIL](chaos/results/02-node-drain.md) |
-| 03 | Node dies (container stopped for 120 s) | 1.68 % errors over 162 s, new DB primary after 83 s, 0 calls lost; app pod crash-looped on DNS after the node came back | [FAIL](chaos/results/03-node-failure.md) |
+| 03 | Node dies (container stopped for 120 s) | 1.68 % errors over 162 s, new DB primary after 83 s, 0 calls lost; app pod crash-looped on DNS (`:nxdomain`) until deleted. **Fixed:** migrations retry in-process, CNPG host is qualified to the cluster FQDN. Re-run `bash chaos/03-node-failure.sh` | [FAIL → fix](chaos/results/03-node-failure.md) |
 | 04 | Kill the PostgreSQL primary | New primary after 22 s, 21 s of errors (0.19 %), 0 calls lost | [PASS](chaos/results/04-db-failover.md) |
 | 05 | Database fully down for ~3 min | Pods NotReady in 12 s, `CallRouterDatabaseDown` paged after 94 s, back 12 s after the DB, 0 calls lost; **SLO alerts blind** | [PASS + finding](chaos/results/05-db-down-fence.md) ([hibernate run](chaos/results/05-db-down-hibernate.md)) |
-| 06 | +600 ms on every `POST /api/calls` | 0 errors, 5-min latency SLI 50 % bad, but the fast-burn page did not fire in 8 min (1-h window diluted) | [FAIL](chaos/results/06-latency.md) |
+| 06 | +600 ms on every `POST /api/calls` | 0 errors, 5-min latency SLI 50 % bad, but the fast-burn page did not fire in 8 min (1h window diluted to 1.45 %). **Fixed:** latency fast-burn long window is 15m. Re-run `bash chaos/06-latency.sh` (`MINUTES=25`) | [FAIL → fix](chaos/results/06-latency.md) |
 
 CI runs experiment 01 (graceful mode, max 1 % errors) on every pipeline in the kind job,
 so a change that breaks graceful shutdown fails the build.
+
+### Fixes after the two failed runs
+
+Both failures below were real. The write-ups keep the original numbers; the
+scripts now check the thing that was broken.
+
+**03, DNS crash loop.** After the stopped node came back, the app pod on it
+logged `tcp connect (call-router-db-rw.voice:5432): non-existing domain -
+:nxdomain` and stayed in `CrashLoopBackOff` until someone deleted it.
+`Ecto.Migrator` runs migrations inside `init/1`; that one failure exited the
+BEAM, and kubelet's restart backoff then hid the recovery of DNS. The pool
+would have reconnected. `CallRouter.Migrator` retries (1 s, doubling up to
+30 s) without exiting, `/healthz` stays green, and `/readyz` stays red until
+the schema is applied. The chart also turns the CNPG host
+`<service>.<namespace>` into `<service>.<namespace>.svc.cluster.local` and sets
+`ndots: 2`, so Erlang's first lookup is the real Service name. Cloud SQL
+(`values-gke-*.yaml`) sets `database.clusterDomain: ""` and is not rewritten.
+The 162 s of errors is kubelet marking the node NotReady plus the CNPG primary
+lease; that part is unchanged. Proof on a kind cluster:
+
+```bash
+bash chaos/03-node-failure.sh
+```
+
+Pass: `calls lost: 0` and `App pods Ready on their own ... **yes**`. No
+`kubectl delete pod`.
+
+**06 — fast-burn page never fired.** Eight minutes at +600 ms on
+`POST /api/calls` made the 5-minute latency bad ratio ~50 % and the 1-hour
+ratio 1.45 % (about 212 000 earlier fast requests, and a slower request rate
+once calls were delayed). The page required both windows above 14.4 %. The
+latency fast-burn long window is now **15m** (still AND 5m, still 14.4×, still
+`for: 2m`). Availability alerts are still 1h / 6h / 3d. `promtool test rules
+slo/tests/latency.test.yml` includes the diluted shape: the 1h ratio stays
+under 14.4 %, the alert is quiet at 8 minutes, and it fires once 15 minutes of
+the bad period are in the window. Proof:
+
+```bash
+bash chaos/06-latency.sh   # MINUTES=25
+```
+
+`CallRouterLatencyBudgetBurnFast` should reach `firing` inside that run.
+`MINUTES=8` is the original miss and is too short.
 
 ### Incident response, runbooks and postmortems
 
