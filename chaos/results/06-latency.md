@@ -1,71 +1,25 @@
 # Chaos experiment: 06-latency
 
-Run: 2026-10-20 22:05 CEST on kind (3 nodes), 2 app replicas, 2 PostgreSQL instance(s).
+Run: 2026-10-23 16:13 CEST on kind (3 nodes), 2 app replicas, 2 PostgreSQL instance(s).
 
 ## Hypothesis
-A dependency adding 600 ms to every call (above the 500 ms SLO threshold) does not cause errors, but burns the latency error budget fast enough for CallRouterLatencyBudgetBurnFast to page within ~10 minutes.
+A dependency adding 600 ms to every POST /api/calls (above the 500 ms SLO threshold) does not cause errors, but the latency fast-burn page (15m and 5m bad ratio above 14.4%) fires within this 25-minute run.
 
 ## Method
-`helm upgrade --set config.faultLatencyMs=600` (rolling update), then 4 workers of POST+GET for 8 minutes; finally back to 0.
+`helm upgrade --set config.faultLatencyMs=600` (rolling update), then 4 workers of POST+GET for 25 minutes; finally back to 0.
 
 ## Result
-- Requests: `total=6152 ok=6152 errors=0 error_pct=0.00 err_window_s=0.0 first_err_ms=0 last_err_ms=0`
-- POST p99 latency (2m): **0.75 s** (600 ms injected + normal work); latency SLI (bad ratio, 5m): **0.50** (raw `0.49986`)
-- CallRouterLatencyBudgetBurnFast firing after: **did not fire within 8 min**
-
-## Why it did not fire (Prometheus queries right after the run, 22:05 CEST)
-| Query | Value |
-|---|---|
-| 5-minute bad ratio, max | **50.5 %** - only `POST` is slowed; the `GET` half of the load stays fast |
-| 1-hour bad ratio, max | **1.45 %** - far below the 14.4 % fast-burn threshold |
-| API requests in the last 1 h | ~212 000 (mostly earlier chaos experiments at full speed) |
-| API requests during the experiment (9 min) | ~5 900 (slow POSTs also slow the load generator down) |
-| Latency alerts seen in the last 15 min | `CallRouterLatencyBudgetBurnSlow` **pending** (ticket); fast and medium: none |
-
-The fast-burn alert needs the **1-hour AND the 5-minute** bad ratio above 14.4 %.
-The 5-minute window crossed it within minutes, but the 1-hour window was diluted by
-~36x more fast requests from the hour before. Also, back-of-the-envelope for steady
-traffic (calculation, not measured): with half the requests slow, the 1-hour ratio
-reaches 14.4 % after about 0.144 / 0.5 x 60 = **~17 minutes**, plus `for: 2m` - so the
-"page within ~10 minutes" hypothesis was too optimistic even without the dilution.
-With the slower request rate during the injection, 25 minutes on that same cluster
-would still have left the 1-hour ratio under 14.4 %.
+- Requests: `total=19176 ok=19176 errors=0 error_pct=0.00 err_window_s=0.0 first_err_ms=0 last_err_ms=0`
+- POST p99 latency (2m): **0.7478688524590164s**
+- Latency SLI bad ratio: 5m **0.49986297615785147**, 15m **0.49969073075903503**, 1h **0.2945511625149001**
+- CallRouterLatencyBudgetBurnFast firing after: **551s**
 
 ## Verdict
-**FAIL** - `CallRouterLatencyBudgetBurnFast` did not fire within 8 minutes.
-- Held: injected latency caused **0 errors** (6152/6152 OK), so error-based alerts and
-  the availability SLO correctly stayed quiet; the 5-minute latency SLI showed the
-  problem immediately (50 %) and the slow-burn ticket alert went pending.
-- Did not hold: no page within the window.
+PASS - latency is detected by the SLO alert, not by error counts.
 
-## Fix (find → fix → prove)
+## Background
+Original run (2026-10-20 22:05 CEST, `MINUTES=8`) **FAIL**ed: 0 errors, POST p99 0.75 s, 5-minute latency bad ratio 50%, but `CallRouterLatencyBudgetBurnFast` never fired. The 1-hour bad ratio peaked at 1.45% because about 212 000 earlier fast requests diluted `rate()[1h]`. At a steady 50% bad ratio that 1h window needs about 17 minutes plus `for: 2m` to cross 14.4%, and the slower request rate during the injection (slow POSTs throttle the load generator) makes it worse. Re-running for 25 minutes on that busy cluster would still have missed.
 
-**Cause.** `CallRouterLatencyBudgetBurnFast` was `rate()[1h] > 14.4% AND rate()[5m] > 14.4%`
-for 2 minutes. The 5-minute ratio was ~50 % within minutes. The 1-hour ratio was
-1.45 % because earlier fast requests dominated the increase, and slow POSTs also
-reduced how many bad samples the load generator could add. The multi-window idea
-(long window = significant, short window = still happening) was right; 1 hour is
-too long a "long" window for this SLO when traffic before the incident was healthy
-and faster.
+Fix: the latency fast-burn long window is **15m** (still AND the 5m window, still 14.4x the 1% budget, still `for: 2m`). Fifteen minutes of bad latency is not diluted by the previous hour. Availability burn rates are unchanged. Promtool covers the diluted shape: fast traffic for an hour, then 50% slow at a lower rate; the 1h ratio stays under 14.4% and the page still fires, and it does not fire at the 8-minute mark.
 
-**Change.** The latency fast-burn long window is **15 minutes** (still AND the
-5-minute window, still 14.4× the 1 % budget, still `for: 2m`). A 15-minute window
-does not contain the previous hour, so a bad period of about 20 minutes pages.
-Availability burn rates (1h / 6h / 3d) are unchanged. The recording rule is
-`slo:sli_error:ratio_rate15m{slo="call-router-latency"}`. Promtool test 3 in
-`slo/tests/latency.test.yml` replays the diluted shape: an hour of fast traffic,
-then 50 % slow at a lower rate. The 1-hour ratio stays under 14.4 %, the alert
-does not fire at the original 8-minute mark, and it does fire once the 15-minute
-window is inside the bad period.
-
-**Re-verify** (kind up, Prometheus port-forwarded to `localhost:9090`):
-
-```bash
-bash chaos/06-latency.sh
-```
-
-That defaults to `MINUTES=25`. `CallRouterLatencyBudgetBurnFast` should go
-`firing` inside the run (expect on the order of 15–20 minutes, plus `for: 2m`).
-The report prints the 5m, 15m and 1h bad ratios; 15m should be above ~0.14 while
-1h may still look fine. `MINUTES=8 bash chaos/06-latency.sh` is the original
-failing duration and is not long enough for this page.
+Re-verify (kind up, Prometheus on localhost:9090): `bash chaos/06-latency.sh` (default `MINUTES=25`). The page should fire inside that window. `MINUTES=8 bash chaos/06-latency.sh` is the original failing duration.
