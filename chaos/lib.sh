@@ -106,8 +106,15 @@ db_pods() { kubectl -n "$NAMESPACE" get pods -l cnpg.io/cluster=call-router-db -
 primary() { kubectl -n "$NAMESPACE" get cluster call-router-db -o jsonpath='{.status.currentPrimary}'; }
 
 # report <name> : write $RESULTS/<name>.md from the HYPOTHESIS / METHOD / RESULT / VERDICT variables.
+# Optional BACKGROUND is appended (find -> fix notes that should survive a re-run).
 report() {
   mkdir -p "$RESULTS"
+  background=""
+  if [ -n "${BACKGROUND:-}" ]; then
+    background="
+## Background
+${BACKGROUND}"
+  fi
   cat >"$RESULTS/$1.md" <<MD
 # Chaos experiment: $1
 
@@ -124,6 +131,7 @@ ${RESULT:?}
 
 ## Verdict
 ${VERDICT:?}
+${background}
 MD
   log "report: $RESULTS/$1.md"
 }

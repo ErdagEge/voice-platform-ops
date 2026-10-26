@@ -43,6 +43,15 @@ spec:
     spec:
       serviceAccountName: {{ include "call-router.serviceAccountName" . }}
       automountServiceAccountToken: {{ .Values.serviceAccount.automountToken }}
+      {{- if and .Values.database.enabled .Values.database.clusterDomain }}
+      # Default ndots is 5, so a name with fewer dots is looked up under the
+      # search list first. Erlang treats the first NXDOMAIN as final (chaos
+      # 03). ndots 2 makes the qualified Service FQDN resolve on query one.
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "2"
+      {{- end }}
       # How long Kubernetes waits after SIGTERM before force-killing (SIGKILL).
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       # Pod-level security: refuse to start as root, use the image's UID 10001.

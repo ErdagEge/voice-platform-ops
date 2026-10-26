@@ -32,7 +32,7 @@ kube_deployment_status_replicas_available{deployment="call-router"}
 ## Diagnosis
 1. **Do pods exist?** `kubectl -n voice get pods`. If there are 0, someone scaled to 0, or the Deployment or namespace was deleted. For the namespace, see the [DR runbook](../dr.md).
 2. **Pending?** `kubectl describe pod` shows the scheduling reason: not enough resources, no node free for the hard topology spread, or a node is down.
-3. **CrashLoopBackOff?** Go to [CallRouterPodRestarting](CallRouterPodRestarting.md). If the app crashes at boot because the database is unreachable (`Ecto.Migrator` errors in the logs), go to [CallRouterDatabaseDown](CallRouterDatabaseDown.md).
+3. **CrashLoopBackOff?** Go to [CallRouterPodRestarting](CallRouterPodRestarting.md). A database that is down at boot should leave the pod Running and NotReady (migrations retry), not restarting; if logs still show `Ecto.Migrator` crashing init, the image is from before that fix. Follow [CallRouterDatabaseDown](CallRouterDatabaseDown.md) either way.
 4. **Running but not scraped?** Check *Prometheus → Status → Targets* (`make prometheus`). If the ServiceMonitor is missing, re-deploy the chart; if it's a network policy, check that.
 
 ## Mitigation

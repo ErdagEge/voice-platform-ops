@@ -119,7 +119,7 @@ the pods alive, so there was no restart storm or crash loop.
 |---|---|---|---|---|---|
 | 1 | Page on "no Ready pod" regardless of cause: `CallRouterNoReadyPods` (`kube_deployment_status_replicas_ready == 0` for 1 m) + promtool test + [runbook](../runbooks/CallRouterNoReadyPods.md) | detect | P1 | voice-platform | **Done** (2026-10-20), rule unit-tested with promtool |
 | 2 | Measure availability where the caller is: load-balancer/Ingress metrics on GKE or a blackbox-exporter probe, and use that as the SLI | detect | P2 | voice-platform | Open |
-| 3 | Don't crash at boot when the DB is unreachable: run migrations as a Helm pre-upgrade Job, start the app unready instead of crashing | mitigate | P2 | voice-platform | Open |
+| 3 | Don't crash at boot when the DB (or its DNS name) is unreachable: retry migrations in-process, stay unready, and qualify the CNPG host. A Helm pre-upgrade Job would not cover a pod starting after a node reboot (chaos 03) | mitigate | P2 | voice-platform | **Done** (2026-10-23): `CallRouter.Migrator` + `database.clusterDomain`, see [chaos 03](../../chaos/results/03-node-failure.md) |
 | 4 | Planned DB maintenance: switch over first / lower `smartShutdownTimeout`; document in the DR runbook | process | P3 | voice-platform | Open |
 | 5 | Re-run this game day after every change to probes, the DB chart or alert rules (chaos experiment 05) | process | P3 | voice-platform | Open |
 

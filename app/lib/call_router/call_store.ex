@@ -38,17 +38,21 @@ defmodule CallRouter.CallStore do
   def children do
     case Application.get_env(:call_router, :store, :memory) do
       :postgres ->
-        # Repo = connection pool. Ecto.Migrator runs pending migrations at
-        # boot (Postgres advisory lock, so 2 pods starting together is safe).
-        [
-          CallRouter.Repo,
-          {Ecto.Migrator,
-           repos: [CallRouter.Repo],
-           skip: !Application.get_env(:call_router, :run_migrations, true)}
-        ]
+        # Repo = connection pool (it reconnects on its own). Migrations go
+        # through CallRouter.Migrator, which retries: Ecto.Migrator's one-shot
+        # init crashes the VM on a DNS failure (chaos experiment 03).
+        [CallRouter.Repo] ++ migration_children()
 
       :memory ->
         [CallRouter.CallStore.Memory]
+    end
+  end
+
+  defp migration_children do
+    if Application.get_env(:call_router, :run_migrations, true) do
+      [{CallRouter.Migrator, repo: CallRouter.Repo}]
+    else
+      []
     end
   end
 end

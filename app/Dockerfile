@@ -73,11 +73,16 @@ FROM ${RUNNER_IMAGE} AS runtime
 #  - ca-certificates: trust store for outbound HTTPS
 #  - curl: used by HEALTHCHECK below
 #  - locales: proper UTF-8 support
-# `apt-get upgrade` first pulls in Debian security fixes released after the
-# base image was built, so the CI vulnerability scan (HIGH/CRITICAL) stays
-# green between base-image updates.
+# `apt-get upgrade` pulls Debian security fixes published after the pinned
+# base image. The refresh argument is part of the cache key: without it the
+# GitHub Actions layer cache replays an old upgrade forever (libbrotli1 stayed
+# at 1.1.0-2+b7 after 1.1.0-2+deb13u1 landed in trixie-security). CI passes the
+# commit SHA so every build upgrades against the mirrors of that commit.
+# A laptop build that omits the arg uses "local" and may reuse its own cache.
+ARG DEBIAN_SECURITY_REFRESH=local
 # hadolint ignore=DL3008
-RUN apt-get update \
+RUN echo "debian security refresh: ${DEBIAN_SECURITY_REFRESH}" \
+ && apt-get update \
  && apt-get upgrade -y --no-install-recommends \
  && apt-get install -y --no-install-recommends \
       libstdc++6 openssl libncurses6 locales ca-certificates curl \
