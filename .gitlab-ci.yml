@@ -200,6 +200,7 @@ docker:build:
       docker buildx build app
       --tag "$IMAGE_NAME:$IMAGE_TAG"
       --tag "$IMAGE_NAME:$CI_COMMIT_REF_SLUG"
+      --build-arg "DEBIAN_SECURITY_REFRESH=$CI_COMMIT_SHA"
       --cache-from "type=registry,ref=$IMAGE_NAME:buildcache"
       --cache-to "type=registry,ref=$IMAGE_NAME:buildcache,mode=max"
       --label "org.opencontainers.image.revision=$CI_COMMIT_SHA"
